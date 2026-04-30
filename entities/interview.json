@@ -1,0 +1,123 @@
+{
+    "name": "Interview",
+    "type": "object",
+    "properties": {
+      "role_title": {
+        "type": "string"
+      },
+      "company": {
+        "type": "string"
+      },
+      "experience_level": {
+        "type": "string",
+        "enum": [
+          "entry",
+          "mid",
+          "senior",
+          "lead"
+        ]
+      },
+      "interview_type": {
+        "type": "string",
+        "enum": [
+          "behavioral",
+          "technical",
+          "mixed"
+        ]
+      },
+      "interview_mode": {
+        "type": "string",
+        "enum": [
+          "video",
+          "audio",
+          "chat"
+        ],
+        "default": "audio"
+      },
+      "industry": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "in_progress",
+          "completed",
+          "abandoned"
+        ],
+        "default": "in_progress"
+      },
+      "questions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string"
+            },
+            "answer": {
+              "type": "string"
+            },
+            "score_answer_quality": {
+              "type": "number"
+            },
+            "score_english_clarity": {
+              "type": "number"
+            },
+            "score_communication": {
+              "type": "number"
+            },
+            "score_eye_contact": {
+              "type": "number"
+            },
+            "score_body_language": {
+              "type": "number"
+            },
+            "feedback": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "overall_score": {
+        "type": "number"
+      },
+      "score_answer_quality": {
+        "type": "number"
+      },
+      "score_english_clarity": {
+        "type": "number"
+      },
+      "score_communication": {
+        "type": "number"
+      },
+      "score_eye_contact": {
+        "type": "number"
+      },
+      "score_body_language": {
+        "type": "number"
+      },
+      "summary_feedback": {
+        "type": "string"
+      },
+      "strengths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "improvements": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "duration_seconds": {
+        "type": "number"
+      }
+    },
+    "required": [
+      "role_title",
+      "company",
+      "interview_type"
+    ]
+  }

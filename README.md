@@ -15,7 +15,23 @@ Any change pushed to the repo will also be reflected in the Base44 Builder.
 1. Clone the repository using the project's Git URL 
 2. Navigate to the project directory
 3. Install dependencies: `npm install`
-4. Create an `.env.local` file and set the right environment variables
+4. Create an `.env.local` file (see [.env.example](.env.example)) and set variables for either **mock** or **real** Base44.
+
+**Option A — Local mock (full UI, no Base44 login)**
+
+Use this to run the interview flow entirely in the browser with canned “LLM” responses and in-memory interviews.
+
+```
+VITE_USE_MOCK_BASE44=true
+```
+
+Data is cleared when you refresh the page. Logout and “login” are no-ops in mock mode.
+
+On each load, mock mode seeds **three completed interviews** (see [src/api/mockInterviewSeed.js](src/api/mockInterviewSeed.js)) so **Dashboard** and **History** are populated and you can open full **Reports**—including one **video** session with eye-contact and body-language scores. New interviews you create are merged with that seed until you refresh.
+
+**Option B — Real Base44 backend**
+
+Unset `VITE_USE_MOCK_BASE44` or set it to `false`, then set your app credentials from the Base44 dashboard:
 
 ```
 VITE_BASE44_APP_ID=your_app_id

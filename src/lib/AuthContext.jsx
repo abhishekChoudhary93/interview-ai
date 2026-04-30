@@ -1,6 +1,7 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { appParams } from '@/lib/app-params';
+import { isMockBase44 } from '@/lib/is-mock-base44';
 import { createAxiosClient } from '@base44/sdk/dist/utils/axios-client';
 
 const AuthContext = createContext();
@@ -19,6 +20,25 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const checkAppState = async () => {
+    if (isMockBase44()) {
+      setIsLoadingPublicSettings(true);
+      setIsLoadingAuth(true);
+      setAuthError(null);
+      setAppPublicSettings({ id: 'mock', public_settings: {} });
+      try {
+        const currentUser = await base44.auth.me();
+        setUser(currentUser);
+        setIsAuthenticated(true);
+      } catch (e) {
+        console.error('Mock auth bootstrap failed:', e);
+        setIsAuthenticated(false);
+      }
+      setIsLoadingPublicSettings(false);
+      setIsLoadingAuth(false);
+      setAuthChecked(true);
+      return;
+    }
+
     try {
       setIsLoadingPublicSettings(true);
       setAuthError(null);

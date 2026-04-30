@@ -28,6 +28,11 @@ export async function runSeed() {
 
   const uid = user._id;
   const seeds = getMockSeedInterviews();
+  const seedClientIds = seeds.map((r) => r.id);
+
+  // Attach seed rows to the current demo account even if the DB still had
+  // mock-seed-* interviews tied to an older user id (e.g. user recreated).
+  await Interview.updateMany({ clientId: { $in: seedClientIds } }, { $set: { userId: uid } });
 
   for (const row of seeds) {
     const { id, ...fields } = row;

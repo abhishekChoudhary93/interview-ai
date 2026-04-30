@@ -1,7 +1,17 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { User } from '../models/User.js';
-import { signToken, authMiddleware } from '../middleware/auth.js';
+import {
+  authMiddleware,
+  setAuthCookies,
+  clearAuthCookies,
+  verifyRefreshToken,
+  signAccessToken,
+  signRefreshToken,
+  AUTH_COOKIES,
+  accessCookieOptions,
+  refreshCookieOptions,
+} from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -21,9 +31,8 @@ router.post('/register', async (req, res) => {
       passwordHash,
       fullName: String(fullName).trim(),
     });
-    const token = signToken(user._id.toString());
+    setAuthCookies(res, user._id.toString());
     return res.status(201).json({
-      token,
       user: { id: user._id.toString(), email: user.email, full_name: user.fullName },
     });
   } catch (e) {
@@ -42,9 +51,8 @@ router.post('/login', async (req, res) => {
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-    const token = signToken(user._id.toString());
+    setAuthCookies(res, user._id.toString());
     return res.json({
-      token,
       user: { id: user._id.toString(), email: user.email, full_name: user.fullName },
     });
   } catch (e) {
@@ -53,8 +61,27 @@ router.post('/login', async (req, res) => {
   }
 });
 
+router.post('/refresh', (req, res) => {
+  try {
+    const rt = req.cookies?.[AUTH_COOKIES.refresh];
+    if (!rt) {
+      return res.status(401).json({ error: 'No refresh token' });
+    }
+    const userId = verifyRefreshToken(rt);
+    const access = signAccessToken(userId);
+    const refresh = signRefreshToken(userId);
+    res.cookie(AUTH_COOKIES.access, access, accessCookieOptions());
+    res.cookie(AUTH_COOKIES.refresh, refresh, refreshCookieOptions());
+    return res.json({ ok: true });
+  } catch {
+    clearAuthCookies(res);
+    return res.status(401).json({ error: 'Invalid refresh token' });
+  }
+});
+
 router.post('/logout', (_req, res) => {
-  res.json({ ok: true });
+  clearAuthCookies(res);
+  return res.json({ ok: true });
 });
 
 router.get('/me', authMiddleware, async (req, res) => {

@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { Search, ArrowRight, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { listInterviews, deleteInterview } from '@/api/interviews';
+import { useAuth } from '@/lib/AuthContext';
 import ScoreGauge from "../components/ScoreGauge";
 
 export default function History() {
@@ -11,12 +12,31 @@ export default function History() {
   const [interviews, setInterviews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const { isAuthenticated } = useAuth();
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      setLoading(false);
+      setInterviews([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setLoading(true);
     listInterviews({ status: 'completed', sort: '-created_date', limit: 50 })
-      .then(setInterviews)
-      .finally(() => setLoading(false));
-  }, []);
+      .then((rows) => {
+        if (!cancelled) setInterviews(Array.isArray(rows) ? rows : []);
+      })
+      .catch((e) => {
+        console.error('[history] listInterviews failed', e);
+        if (!cancelled) setInterviews([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
 
   const filtered = interviews.filter(i =>
     i.role_title?.toLowerCase().includes(search.toLowerCase()) ||

@@ -1,5 +1,5 @@
 import { apiRequest } from './httpClient.js';
-import { clearToken, setToken } from '@/lib/authToken.js';
+import { clearToken } from '@/lib/authToken.js';
 
 export async function register({ email, password, fullName }) {
   const data = await apiRequest('/api/auth/register', {
@@ -7,7 +7,6 @@ export async function register({ email, password, fullName }) {
     body: { email, password, fullName },
     skipAuth: true,
   });
-  setToken(data.token);
   return normalizeUser(data.user);
 }
 
@@ -17,13 +16,21 @@ export async function login({ email, password }) {
     body: { email, password },
     skipAuth: true,
   });
-  setToken(data.token);
   return normalizeUser(data.user);
 }
 
 export async function fetchMe() {
   const u = await apiRequest('/api/auth/me');
   return normalizeUser(u);
+}
+
+export async function logoutApi() {
+  try {
+    await apiRequest('/api/auth/logout', { method: 'POST', skipAuth: true });
+  } catch {
+    // Still clear client state if the network fails.
+  }
+  clearToken();
 }
 
 export function logoutClient() {

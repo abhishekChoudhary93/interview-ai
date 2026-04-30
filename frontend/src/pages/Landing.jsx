@@ -5,8 +5,11 @@ import CTASection from "../components/landing/CTASection";
 import AnimatedDemo from "../components/landing/AnimatedDemo";
 import { Link } from 'react-router-dom';
 import { Mic } from "lucide-react";
+import { useAuth } from '@/lib/AuthContext';
 
 export default function Landing() {
+  const { isAuthenticated, authChecked, logout } = useAuth();
+
   return (
     <div className="min-h-screen">
       {/* Nav */}
@@ -21,12 +24,29 @@ export default function Landing() {
             </Link>
             <nav className="flex items-center gap-6">
               <a href="#how-it-works" className="text-sm text-primary-foreground/60 hover:text-primary-foreground transition-colors">How It Works</a>
-              <Link to="/login" className="text-sm text-primary-foreground/60 hover:text-primary-foreground transition-colors">
-                Sign in
-              </Link>
-              <Link to="/register" className="text-sm text-primary-foreground/60 hover:text-primary-foreground transition-colors">
-                Register
-              </Link>
+              {authChecked && isAuthenticated ? (
+                <>
+                  <Link to="/dashboard" className="text-sm text-primary-foreground/60 hover:text-primary-foreground transition-colors">
+                    Dashboard
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => logout()}
+                    className="text-sm text-primary-foreground/60 hover:text-primary-foreground transition-colors"
+                  >
+                    Sign out
+                  </button>
+                </>
+              ) : authChecked ? (
+                <>
+                  <Link to="/login" className="text-sm text-primary-foreground/60 hover:text-primary-foreground transition-colors">
+                    Sign in
+                  </Link>
+                  <Link to="/register" className="text-sm text-primary-foreground/60 hover:text-primary-foreground transition-colors">
+                    Register
+                  </Link>
+                </>
+              ) : null}
               <Link to="/setup" className="text-sm font-semibold text-accent hover:text-accent/80 transition-colors">
                 Start Interview →
               </Link>

@@ -1,10 +1,21 @@
 import express from 'express';
 import crypto from 'crypto';
+import mongoose from 'mongoose';
 import { authMiddleware } from '../middleware/auth.js';
 import { Interview } from '../models/Interview.js';
 
 const router = express.Router();
 router.use(authMiddleware);
+
+function toUserObjectId(userId) {
+  const s = String(userId);
+  if (!mongoose.Types.ObjectId.isValid(s)) return null;
+  try {
+    return new mongoose.Types.ObjectId(s);
+  } catch {
+    return null;
+  }
+}
 
 function toIso(d = new Date()) {
   return d.toISOString();
@@ -30,8 +41,12 @@ function serialize(doc) {
 
 router.get('/', async (req, res) => {
   try {
+    const userObjectId = toUserObjectId(req.userId);
+    if (!userObjectId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const { status, sort = '-created_date', limit = '50' } = req.query;
-    const q = { userId: req.userId };
+    const q = { userId: userObjectId };
     if (status) q.status = status;
     const lim = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 50));
     const sortField = sort.startsWith('-') ? sort.slice(1) : sort;
@@ -49,11 +64,15 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
+    const userObjectId = toUserObjectId(req.userId);
+    if (!userObjectId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const body = req.body || {};
     const clientId =
       typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `iv-${Date.now()}`;
     const row = await Interview.create({
-      userId: req.userId,
+      userId: userObjectId,
       clientId,
       status: body.status || 'in_progress',
       created_date: body.created_date || toIso(),
@@ -75,8 +94,12 @@ router.post('/', async (req, res) => {
 
 router.get('/:clientId', async (req, res) => {
   try {
+    const userObjectId = toUserObjectId(req.userId);
+    if (!userObjectId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const doc = await Interview.findOne({
-      userId: req.userId,
+      userId: userObjectId,
       clientId: req.params.clientId,
     }).exec();
     if (!doc) return res.status(404).json({ error: 'Not found' });
@@ -89,8 +112,12 @@ router.get('/:clientId', async (req, res) => {
 
 router.patch('/:clientId', async (req, res) => {
   try {
+    const userObjectId = toUserObjectId(req.userId);
+    if (!userObjectId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const doc = await Interview.findOne({
-      userId: req.userId,
+      userId: userObjectId,
       clientId: req.params.clientId,
     }).exec();
     if (!doc) return res.status(404).json({ error: 'Not found' });
@@ -109,8 +136,12 @@ router.patch('/:clientId', async (req, res) => {
 
 router.delete('/:clientId', async (req, res) => {
   try {
+    const userObjectId = toUserObjectId(req.userId);
+    if (!userObjectId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const r = await Interview.deleteOne({
-      userId: req.userId,
+      userId: userObjectId,
       clientId: req.params.clientId,
     }).exec();
     if (r.deletedCount === 0) return res.status(404).json({ error: 'Not found' });

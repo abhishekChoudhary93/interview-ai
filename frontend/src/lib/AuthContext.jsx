@@ -1,5 +1,4 @@
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
-import { getToken } from '@/lib/authToken.js';
 import * as authApi from '@/api/auth.js';
 
 const AuthContext = createContext();
@@ -11,14 +10,6 @@ export const AuthProvider = ({ children }) => {
   const [authChecked, setAuthChecked] = useState(false);
 
   const refreshUser = useCallback(async () => {
-    const token = getToken();
-    if (!token) {
-      setUser(null);
-      setIsAuthenticated(false);
-      setIsLoadingAuth(false);
-      setAuthChecked(true);
-      return;
-    }
     setIsLoadingAuth(true);
     try {
       const me = await authApi.fetchMe();
@@ -54,8 +45,8 @@ export const AuthProvider = ({ children }) => {
     return me;
   };
 
-  const logout = () => {
-    authApi.logoutClient();
+  const logout = async () => {
+    await authApi.logoutApi();
     setUser(null);
     setIsAuthenticated(false);
     setAuthChecked(true);

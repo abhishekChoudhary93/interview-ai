@@ -19,6 +19,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-production}
       SEED_ON_START: "true"
       FRONTEND_ORIGIN: http://localhost:5173
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o-mini}
       DEMO_USER_EMAIL: ${DEMO_USER_EMAIL:-demo@interview-ai.local}
       DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:-demo123456}
     depends_on:

@@ -7,6 +7,7 @@ import authRoutes from './routes/auth.js';
 import interviewRoutes from './routes/interviews.js';
 import llmRoutes from './routes/llm.js';
 import { runSeed } from './seed/runSeed.js';
+import { cookieParseMiddleware } from './middleware/cookieParse.js';
 
 const app = express();
 app.use(
@@ -15,6 +16,7 @@ app.use(
     credentials: true,
   })
 );
+app.use(cookieParseMiddleware);
 app.use(express.json({ limit: '2mb' }));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Mic, ArrowRight, Clock, TrendingUp, BarChart3, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,13 +10,32 @@ import ScoreGauge from "../components/ScoreGauge";
 export default function Dashboard() {
   const [interviews, setInterviews] = useState([]);
   const [loading, setLoading] = useState(true);
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
+  const navigate = useNavigate();
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      setLoading(false);
+      setInterviews([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setLoading(true);
     listInterviews({ status: 'completed', sort: '-created_date', limit: 20 })
-      .then(setInterviews)
-      .finally(() => setLoading(false));
-  }, []);
+      .then((rows) => {
+        if (!cancelled) setInterviews(Array.isArray(rows) ? rows : []);
+      })
+      .catch((e) => {
+        console.error('[dashboard] listInterviews failed', e);
+        if (!cancelled) setInterviews([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
 
   if (loading) {
     return (

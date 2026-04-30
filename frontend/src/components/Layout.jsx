@@ -1,9 +1,10 @@
-import { Outlet, Link, useLocation } from "react-router-dom";
+import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
 import { Mic, Home, History, LogOut } from "lucide-react";
 import { useAuth } from '@/lib/AuthContext';
 
 export default function Layout() {
   const location = useLocation();
+  const navigate = useNavigate();
   const { logout } = useAuth();
   const isLanding = location.pathname === "/";
   const isInterview = location.pathname === "/interview";
@@ -29,9 +30,10 @@ export default function Layout() {
                 <NavLink to="/setup" icon={<Mic className="w-4 h-4" />} label="New Interview" current={location.pathname} />
                 <NavLink to="/history" icon={<History className="w-4 h-4" />} label="History" current={location.pathname} />
                 <button
-                  onClick={() => {
-                    logout();
-                    window.location.href = '/login';
+                  type="button"
+                  onClick={async () => {
+                    await logout();
+                    navigate('/');
                   }}
                   className="ml-2 p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
                 >

@@ -1,0 +1,42 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: "3001"
+      APP_ENV: local
+      MONGODB_URI: mongodb://mongo:27017/interview_ai
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-production}
+      SEED_ON_START: "true"
+      FRONTEND_ORIGIN: http://localhost:5173
+      DEMO_USER_EMAIL: ${DEMO_USER_EMAIL:-demo@interview-ai.local}
+      DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:-demo123456}
+    depends_on:
+      - mongo
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.dev
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app/frontend
+    environment:
+      VITE_API_URL: http://localhost:3001
+    depends_on:
+      - backend
+
+volumes:
+  mongo_data:

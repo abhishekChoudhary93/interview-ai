@@ -1,0 +1,33 @@
+# Production-oriented stack: external MongoDB, no demo seed, static frontend build.
+# Environment: root `.env.production` (use: docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d)
+#
+# Required in .env.production: MONGODB_URI, JWT_SECRET, FRONTEND_ORIGIN
+# Optional: VITE_API_URL (empty = same origin as the SPA), BACKEND_PORT, FRONTEND_HTTP_PORT
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-3001}:3001"
+    environment:
+      APP_ENV: production
+      PORT: "3001"
+      MONGODB_URI: ${MONGODB_URI:?Set MONGODB_URI}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      SEED_ON_START: "false"
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?Set FRONTEND_ORIGIN}
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_HTTP_PORT:-8080}:80"
+    depends_on:
+      - backend

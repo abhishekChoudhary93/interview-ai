@@ -6,10 +6,10 @@
     "backend"
   ],
   "scripts": {
-    "start": "docker compose --env-file .env.local -f docker-compose.yml up --build -d",
-    "start:attach": "docker compose --env-file .env.local -f docker-compose.yml up --build",
+    "start": "docker compose --env-file .env.local -f docker-compose.yml down --remove-orphans || true && docker compose --env-file .env.local -f docker-compose.yml up --build -d",
+    "start:attach": "docker compose --env-file .env.local -f docker-compose.yml down --remove-orphans || true && docker compose --env-file .env.local -f docker-compose.yml up --build",
     "stop": "docker compose --env-file .env.local -f docker-compose.yml down",
-    "start:prod": "docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d",
+    "start:prod": "docker compose --env-file .env.production -f docker-compose.prod.yml down --remove-orphans || true && docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d",
     "stop:prod": "docker compose --env-file .env.production -f docker-compose.prod.yml down",
     "logs": "docker compose --env-file .env.local -f docker-compose.yml logs -f",
     "dev": "npm run dev -w frontend",

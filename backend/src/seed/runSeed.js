@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { config } from '../config.js';
 import { User } from '../models/User.js';
 import { Interview } from '../models/Interview.js';
+import { InterviewSignalSnapshot } from '../models/InterviewSignalSnapshot.js';
 import { getMockSeedInterviews } from './interviewSeedData.js';
 
 export async function runSeed() {
@@ -49,4 +50,51 @@ export async function runSeed() {
     );
   }
   console.log('[seed] Upserted', seeds.length, 'demo interviews');
+
+  const signalSeeds = [
+    {
+      interviewClientId: 'mock-seed-swe',
+      template_id: 'frontend_engineer_mid',
+      section_scores: { js_runtime: 0.74, coding: 0.69 },
+      topic_signals: {
+        weak: ['distributed cache invalidation'],
+        strong: ['React', 'TypeScript'],
+        never_tested: ['WebSockets'],
+      },
+      notable_quotes: ['Reached for client-side caching broadly without discussing TTL tradeoffs.'],
+      recommendation: 'neutral',
+    },
+    {
+      interviewClientId: 'mock-seed-senior-pm',
+      template_id: 'product_manager_growth',
+      section_scores: { product_sense: 0.82, execution: 0.78 },
+      topic_signals: {
+        weak: ['pricing experiments'],
+        strong: ['stakeholder narrative', 'metrics'],
+        never_tested: ['international rollout'],
+      },
+      notable_quotes: ['Shipped activation experiment that moved signup conversion by 12%.'],
+      recommendation: 'hire',
+    },
+  ];
+
+  for (const snap of signalSeeds) {
+    await InterviewSignalSnapshot.findOneAndUpdate(
+      { userId: uid, interviewClientId: snap.interviewClientId },
+      {
+        $set: {
+          userId: uid,
+          interviewClientId: snap.interviewClientId,
+          completedAt: new Date(),
+          template_id: snap.template_id,
+          section_scores: snap.section_scores,
+          topic_signals: snap.topic_signals,
+          notable_quotes: snap.notable_quotes,
+          recommendation: snap.recommendation,
+        },
+      },
+      { upsert: true, new: true }
+    );
+  }
+  console.log('[seed] Upserted', signalSeeds.length, 'interview signal snapshots');
 }

@@ -1,0 +1,93 @@
+{
+  "template_id": "frontend_engineer_mid",
+  "version": "1.0",
+  "total_minutes": 55,
+  "sections": [
+    {
+      "id": "js_runtime",
+      "name": "JavaScript / TypeScript & Runtime",
+      "required": true,
+      "time_budget_minutes": 12,
+      "weight": 0.2,
+      "topics": [
+        {
+          "id": "language_core",
+          "subtopics": ["closures", "async_await", "event_loop", "typing"],
+          "min_questions": 2,
+          "depth_levels": 3
+        }
+      ],
+      "probe_areas": ["performance pitfalls", "debugging approach"]
+    },
+    {
+      "id": "ui_architecture",
+      "name": "UI Architecture",
+      "required": true,
+      "time_budget_minutes": 14,
+      "weight": 0.28,
+      "topics": [
+        {
+          "id": "state_and_components",
+          "subtopics": ["state_management", "rendering", "lists_keys"],
+          "min_questions": 2,
+          "depth_levels": 3
+        }
+      ],
+      "probe_areas": ["accessibility", "bundle size"]
+    },
+    {
+      "id": "network_web",
+      "name": "Network & Web Platform",
+      "required": true,
+      "time_budget_minutes": 12,
+      "weight": 0.22,
+      "topics": [
+        {
+          "id": "http_caching_security",
+          "subtopics": ["HTTP", "caching_headers", "CORS", "XSS_CSRF_basics"],
+          "min_questions": 2,
+          "depth_levels": 3
+        }
+      ],
+      "probe_areas": ["API design from UI perspective"]
+    },
+    {
+      "id": "coding",
+      "name": "Coding",
+      "required": true,
+      "time_budget_minutes": 12,
+      "weight": 0.2,
+      "topics": [
+        {
+          "id": "ui_coding",
+          "subtopics": ["component_problem", "small_algo"],
+          "min_questions": 1,
+          "depth_levels": 3
+        }
+      ],
+      "difficulty_pool": {
+        "easy": ["reverse_string", "counter_component"],
+        "medium": ["debounce", "nested_checkbox"],
+        "hard": ["virtual_list_sketch"]
+      },
+      "hint_protocol": ["conceptual", "algorithmic", "near_solution"]
+    },
+    {
+      "id": "behavioral",
+      "name": "Behavioral",
+      "required": true,
+      "time_budget_minutes": 5,
+      "weight": 0.1,
+      "frameworks": ["STAR"],
+      "topics": [
+        {
+          "id": "behavioral_stories",
+          "subtopics": ["collaboration", "quality"],
+          "min_questions": 1,
+          "depth_levels": 2
+        }
+      ],
+      "min_questions": 1
+    }
+  ]
+}

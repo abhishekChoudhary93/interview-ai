@@ -1,0 +1,102 @@
+{
+  "template_id": "backend_engineer_senior",
+  "version": "2.1",
+  "total_minutes": 60,
+  "sections": [
+    {
+      "id": "fundamentals",
+      "name": "CS Fundamentals",
+      "required": true,
+      "time_budget_minutes": 10,
+      "weight": 0.15,
+      "topics": [
+        {
+          "id": "data_structures",
+          "subtopics": ["arrays", "trees", "graphs", "hashmaps"],
+          "min_questions": 2,
+          "depth_levels": 3
+        },
+        {
+          "id": "complexity",
+          "subtopics": ["time", "space", "amortized"],
+          "min_questions": 1,
+          "depth_levels": 2
+        }
+      ],
+      "probe_areas": ["trade-offs", "when to choose which structure"],
+      "skip_conditions": ["experience_level == lead"]
+    },
+    {
+      "id": "system_design",
+      "name": "System Design",
+      "required": true,
+      "time_budget_minutes": 25,
+      "weight": 0.4,
+      "topics": [
+        {
+          "id": "scalability",
+          "subtopics": ["horizontal_scaling", "load_balancing", "caching", "CDN"],
+          "min_questions": 2,
+          "depth_levels": 4
+        },
+        {
+          "id": "databases",
+          "subtopics": ["SQL_vs_NoSQL", "replication", "sharding", "consistency"],
+          "min_questions": 2,
+          "depth_levels": 4
+        },
+        {
+          "id": "distributed_systems",
+          "subtopics": ["CAP", "consensus", "message_queues"],
+          "min_questions": 1,
+          "depth_levels": 3
+        }
+      ],
+      "probe_areas": ["failure modes", "trade-offs made", "monitoring"],
+      "hint_protocol": ["conceptual", "algorithmic", "near_solution"]
+    },
+    {
+      "id": "coding",
+      "name": "Coding Problem",
+      "required": true,
+      "time_budget_minutes": 15,
+      "weight": 0.3,
+      "topics": [
+        {
+          "id": "implementation",
+          "subtopics": ["correctness", "complexity"],
+          "min_questions": 1,
+          "depth_levels": 3
+        }
+      ],
+      "difficulty_pool": {
+        "easy": ["two_sum", "valid_parentheses"],
+        "medium": ["lru_cache", "merge_intervals"],
+        "hard": ["word_ladder", "skyline_problem"]
+      },
+      "hint_protocol": ["conceptual", "algorithmic", "near_solution"]
+    },
+    {
+      "id": "behavioral",
+      "name": "Behavioral",
+      "required": true,
+      "time_budget_minutes": 10,
+      "weight": 0.15,
+      "frameworks": ["STAR"],
+      "topics": [
+        {
+          "id": "behavioral_stories",
+          "subtopics": ["ownership", "conflict", "growth"],
+          "min_questions": 2,
+          "depth_levels": 2
+        }
+      ],
+      "question_pool": [
+        "Tell me about a system you're most proud of.",
+        "Describe a time you disagreed with a technical decision.",
+        "When did you decide with incomplete information?"
+      ],
+      "min_questions": 2
+    }
+  ]
+}

@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "seed": "node src/seed/seedCli.js"
+    "seed": "node src/seed/seedCli.js",
+    "test": "node --test src/services/templateResolve.test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

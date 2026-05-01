@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { listInterviews, deleteInterview } from '@/api/interviews';
 import { useAuth } from '@/lib/AuthContext';
 import ScoreGauge from "../components/ScoreGauge";
+import { formatInterviewType } from "@/utils/interviewLabels";
 
 export default function History() {
   const navigate = useNavigate();
@@ -95,7 +96,7 @@ export default function History() {
                   <p className="font-semibold">{interview.role_title}</p>
                   <p className="text-sm text-muted-foreground">{interview.company}</p>
                   <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground">
-                    <span className="capitalize">{interview.interview_type}</span>
+                    <span>{formatInterviewType(interview.interview_type)}</span>
                     <span>•</span>
                     <span className="capitalize">{interview.experience_level}</span>
                     <span>•</span>

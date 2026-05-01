@@ -14,6 +14,16 @@ const questionSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const conversationTurnSchema = new mongoose.Schema(
+  {
+    role: { type: String, enum: ['interviewer', 'candidate'] },
+    content: String,
+    kind: String,
+    ts: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
 const interviewSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -21,6 +31,8 @@ const interviewSchema = new mongoose.Schema(
     status: { type: String, required: true },
     created_date: { type: String, required: true },
     role_title: String,
+    /** ic | sdm — tech interview track (optional on legacy rows). */
+    role_track: String,
     company: String,
     experience_level: String,
     interview_type: String,
@@ -37,10 +49,21 @@ const interviewSchema = new mongoose.Schema(
     summary_feedback: String,
     strengths: [String],
     improvements: [String],
+    /** Orchestration (optional — legacy interviews omit). */
+    template_id: String,
+    template_version: String,
+    execution_plan: { type: mongoose.Schema.Types.Mixed },
+    adaptation_raw: { type: mongoose.Schema.Types.Mixed },
+    orchestrator_state: { type: mongoose.Schema.Types.Mixed },
+    target_duration_minutes: Number,
+    session_started_at: Date,
+    conversation_turns: { type: [conversationTurnSchema], default: [] },
+    orch_schema_version: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
 
 interviewSchema.index({ userId: 1, clientId: 1 }, { unique: true });
+interviewSchema.index({ userId: 1, status: 1, createdAt: -1 });
 
 export const Interview = mongoose.model('Interview', interviewSchema);

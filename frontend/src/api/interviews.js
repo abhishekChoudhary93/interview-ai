@@ -24,3 +24,22 @@ export function updateInterview(id, patch) {
 export function deleteInterview(id) {
   return apiRequest(`/api/interviews/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
+
+export function startInterviewSession(clientId) {
+  return apiRequest(`/api/interviews/${encodeURIComponent(clientId)}/session/start`, {
+    method: 'POST',
+  });
+}
+
+export function interviewSessionTurn(clientId, candidate_message) {
+  return apiRequest(`/api/interviews/${encodeURIComponent(clientId)}/session/turn`, {
+    method: 'POST',
+    body: { candidate_message },
+  });
+}
+
+export function interviewSessionComplete(clientId) {
+  return apiRequest(`/api/interviews/${encodeURIComponent(clientId)}/session/complete`, {
+    method: 'POST',
+  });
+}

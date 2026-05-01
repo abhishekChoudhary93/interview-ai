@@ -13,7 +13,7 @@ function stripJsonFence(text) {
  * OpenAI-compatible chat completions via OpenRouter.
  * @see https://openrouter.ai/docs
  */
-export async function invokeOpenRouterLLM({ prompt, response_json_schema: schema }) {
+export async function invokeOpenRouterLLM({ prompt, response_json_schema: schema, model }) {
   const apiKey = config.openRouterApiKey;
   if (!apiKey) {
     throw new Error('OpenRouter is not configured (missing OPENROUTER_API_KEY)');
@@ -25,7 +25,7 @@ export async function invokeOpenRouterLLM({ prompt, response_json_schema: schema
   }
 
   const body = {
-    model: config.openRouterModel,
+    model: model || config.openRouterModel,
     messages: [{ role: 'user', content: userContent }],
     temperature: 0.6,
   };

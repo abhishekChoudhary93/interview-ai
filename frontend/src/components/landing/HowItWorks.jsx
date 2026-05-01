@@ -5,7 +5,8 @@ const steps = [
   {
     icon: Target,
     title: "Pick Your Target",
-    description: "Select your dream role, company, experience level, and interview type — behavioral, technical, or mixed. The AI tailors everything to your context.",
+    description:
+      "Choose technology IC vs engineering leadership (SDM), experience band, and interview focus — system design, behavioral, or mixed. Sessions stay grounded in software engineering interviews.",
     color: "bg-blue-500/10 text-blue-500",
   },
   {

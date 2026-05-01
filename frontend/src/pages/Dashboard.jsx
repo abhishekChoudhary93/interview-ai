@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { listInterviews } from '@/api/interviews';
 import { useAuth } from '@/lib/AuthContext';
 import ScoreGauge from "../components/ScoreGauge";
+import { formatInterviewType } from "@/utils/interviewLabels";
 
 export default function Dashboard() {
   const [interviews, setInterviews] = useState([]);
@@ -114,7 +115,7 @@ export default function Dashboard() {
                     <p className="font-semibold truncate">{interview.role_title}</p>
                     <p className="text-sm text-muted-foreground truncate">{interview.company}</p>
                     <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                      <span className="capitalize">{interview.interview_type}</span>
+                      <span>{formatInterviewType(interview.interview_type)}</span>
                       <span>•</span>
                       <span>{new Date(interview.created_date).toLocaleDateString()}</span>
                     </div>

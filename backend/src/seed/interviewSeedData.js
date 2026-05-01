@@ -49,7 +49,7 @@ function makeQuestions(baseQuality, variance = 6) {
 }
 
 export function getMockSeedInterviews() {
-  const id1 = 'mock-seed-senior-pm';
+  const id1 = 'mock-seed-staff-swe';
   const id2 = 'mock-seed-swe';
   const id3 = 'mock-seed-video';
 
@@ -107,7 +107,8 @@ export function getMockSeedInterviews() {
       id: id1,
       status: 'completed',
       created_date: daysAgoIso(2),
-      role_title: 'Senior Product Manager',
+      role_title: 'Staff Software Engineer',
+      role_track: 'ic',
       company: 'Northwind Labs',
       experience_level: 'senior',
       interview_type: 'behavioral',
@@ -118,8 +119,8 @@ export function getMockSeedInterviews() {
       overall_score: overall1,
       ...scores1,
       summary_feedback:
-        'You consistently framed answers with outcomes and stakeholders. Depth is strong; a few answers could start with a crisper headline before the story.',
-      strengths: ['Clear stakeholder narrative', 'Good use of metrics', 'Calm, structured delivery'],
+        'Strong behavioral signals with measurable outcomes. A few answers could open with a sharper headline before the STAR detail.',
+      strengths: ['Clear ownership narrative', 'Good use of metrics', 'Calm, structured delivery'],
       improvements: [
         'Lead with the punchline once in a while',
         'Name one trade-off you rejected',
@@ -131,6 +132,7 @@ export function getMockSeedInterviews() {
       status: 'completed',
       created_date: daysAgoIso(9),
       role_title: 'Software Engineer',
+      role_track: 'ic',
       company: 'Aperture Systems',
       experience_level: 'mid',
       interview_type: 'mixed',
@@ -150,6 +152,7 @@ export function getMockSeedInterviews() {
       status: 'completed',
       created_date: daysAgoIso(1),
       role_title: 'Engineering Manager',
+      role_track: 'sdm',
       company: 'Contoso Health',
       experience_level: 'lead',
       interview_type: 'mixed',

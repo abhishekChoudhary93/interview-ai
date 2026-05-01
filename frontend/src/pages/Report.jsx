@@ -7,6 +7,7 @@ import { getInterview } from '@/api/interviews';
 import ScoreGauge from "../components/ScoreGauge";
 import AIFeedbackSummary from "../components/AIFeedbackSummary";
 import { ScoreRadarChart, ScoreProgressionChart, ScoreLegend } from "../components/ScoreBreakdownChart";
+import { formatInterviewType } from "@/utils/interviewLabels";
 
 export default function Report() {
   const navigate = useNavigate();
@@ -84,7 +85,7 @@ export default function Report() {
                 {formatDuration(interview.duration_seconds || 0)}
               </span>
               <span>{interview.questions?.length || 0} questions</span>
-              <span className="capitalize">{interview.interview_type} interview</span>
+              <span>{formatInterviewType(interview.interview_type)} interview</span>
             </div>
           </div>
         </div>

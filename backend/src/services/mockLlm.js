@@ -9,6 +9,49 @@ function mockQuestionFromPrompt(prompt) {
 export function mockInvokeLLM({ prompt, response_json_schema: schema }) {
   if (schema?.properties) {
     const keys = Object.keys(schema.properties);
+
+    if (keys.includes('section_scores') && keys.includes('recommendation')) {
+      return {
+        section_scores: { fundamentals: 0.72, system_design: 0.65 },
+        topic_signals: {
+          weak: ['distributed consensus', 'cache invalidation'],
+          strong: ['REST APIs', 'task prioritization'],
+          never_tested: ['message queues'],
+        },
+        notable_quotes: ['Candidate emphasized Redis for caching broadly.'],
+        recommendation: 'neutral',
+      };
+    }
+
+    if (keys.includes('action') && keys.includes('hint_level')) {
+      const p = String(prompt || '').toLowerCase();
+      if (p.includes('stuck') || p.includes('not sure')) {
+        return { action: 'GIVE_HINT', reason: 'Candidate uncertain', hint_level: 2 };
+      }
+      return { action: 'GO_DEEPER', reason: 'Continue probing', hint_level: 1 };
+    }
+
+    if (keys.includes('opening_question')) {
+      return {
+        topic_priority_adjustments: { system_design: { lead_with: 'databases' } },
+        depth_allocation: { databases: 'max_depth' },
+        pre_loaded_probes: [
+          {
+            trigger: 'cache',
+            probe: 'Ask specifically about cache invalidation strategies and TTL tradeoffs.',
+            section_id: 'system_design',
+          },
+        ],
+        cross_question_seeds: ['Earlier Redis comment — revisit under consistency.'],
+        skip_list: [],
+        opening_question: {
+          chosen:
+            '[Mock] Start by walking me through how you would design a rate limiter for a public API handling bursty traffic.',
+          reason: 'Hits scalability and consistency themes early.',
+        },
+      };
+    }
+
     if (keys.includes('summary_feedback')) {
       return {
         summary_feedback:
@@ -29,5 +72,13 @@ export function mockInvokeLLM({ prompt, response_json_schema: schema }) {
       };
     }
   }
+
+  if (
+    String(prompt || '').includes('You are Maya') ||
+    String(prompt || '').includes('senior engineering interviewer')
+  ) {
+    return `[Mock interviewer] Thanks for sharing that. Can you go one level deeper on the trade-offs you considered?`;
+  }
+
   return mockQuestionFromPrompt(prompt || '');
 }

@@ -1,0 +1,87 @@
+{
+  "template_id": "product_manager_growth",
+  "version": "1.0",
+  "total_minutes": 50,
+  "sections": [
+    {
+      "id": "product_sense",
+      "name": "Product Sense & Metrics",
+      "required": true,
+      "time_budget_minutes": 14,
+      "weight": 0.3,
+      "topics": [
+        {
+          "id": "metrics_growth",
+          "subtopics": ["north_star", "funnels", "experimentation", "activation"],
+          "min_questions": 2,
+          "depth_levels": 3
+        }
+      ],
+      "probe_areas": ["trade-offs", "segment differences"]
+    },
+    {
+      "id": "execution",
+      "name": "Execution & Prioritization",
+      "required": true,
+      "time_budget_minutes": 14,
+      "weight": 0.28,
+      "topics": [
+        {
+          "id": "roadmaps",
+          "subtopics": ["RICE", "stakeholders", "deadlines"],
+          "min_questions": 2,
+          "depth_levels": 3
+        }
+      ],
+      "probe_areas": ["saying no", "scope cuts"]
+    },
+    {
+      "id": "cross_functional",
+      "name": "Cross-functional & Stakeholders",
+      "required": true,
+      "time_budget_minutes": 10,
+      "weight": 0.22,
+      "topics": [
+        {
+          "id": "alignment",
+          "subtopics": ["engineering", "design", "marketing"],
+          "min_questions": 1,
+          "depth_levels": 3
+        }
+      ],
+      "probe_areas": ["conflict resolution"]
+    },
+    {
+      "id": "behavioral",
+      "name": "Behavioral",
+      "required": true,
+      "time_budget_minutes": 8,
+      "weight": 0.15,
+      "frameworks": ["STAR"],
+      "topics": [
+        {
+          "id": "behavioral_stories",
+          "subtopics": ["failure", "impact"],
+          "min_questions": 2,
+          "depth_levels": 2
+        }
+      ],
+      "min_questions": 2
+    },
+    {
+      "id": "analytical_light",
+      "name": "Light Analytical",
+      "required": false,
+      "time_budget_minutes": 4,
+      "weight": 0.05,
+      "topics": [
+        {
+          "id": "back_of_envelope",
+          "subtopics": ["sizing", "interpretation"],
+          "min_questions": 0,
+          "depth_levels": 2
+        }
+      ]
+    }
+  ]
+}

@@ -88,7 +88,25 @@ export const config = {
     parseOrigins(envString('FRONTEND_ORIGIN', 'http://localhost:5173'))[0] || 'http://localhost:5173'
   ),
   openRouterAppTitle: envString('OPENROUTER_APP_TITLE', 'InterviewAI'),
+  /** When true, new interviews use server session orchestration (session/start, session/turn). Legacy rows unchanged. */
+  orchestrationEnabled: envBool('ORCHESTRATION_ENABLED', true),
+  openRouterDecisionModel: envString('OPENROUTER_DECISION_MODEL', ''),
+  openRouterAdaptationModel: envString('OPENROUTER_ADAPTATION_MODEL', ''),
+  openRouterExtractionModel: envString('OPENROUTER_EXTRACTION_MODEL', ''),
 };
+
+/** Effective OpenRouter model for a tier (falls back to openRouterModel). */
+export function resolveOpenRouterModel(tier) {
+  const m =
+    tier === 'decision'
+      ? config.openRouterDecisionModel
+      : tier === 'adaptation'
+        ? config.openRouterAdaptationModel
+        : tier === 'extraction'
+          ? config.openRouterExtractionModel
+          : '';
+  return (m && m.trim()) || config.openRouterModel;
+}
 
 /**
  * Fail fast when production is misconfigured (weak defaults).

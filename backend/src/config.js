@@ -47,6 +47,15 @@ function resolveJwtRefreshSecret() {
   return `${base}${DEV_JWT_REFRESH_SUFFIX}`;
 }
 
+function parseTrustProxy() {
+  const raw = process.env.TRUST_PROXY;
+  if (raw === undefined || raw === '') return false;
+  if (raw === 'true' || raw === '1') return true;
+  const n = Number(raw);
+  if (Number.isInteger(n) && n >= 0) return n;
+  return false;
+}
+
 export const config = {
   appEnv,
   get isProduction() {
@@ -93,6 +102,10 @@ export const config = {
   openRouterDecisionModel: envString('OPENROUTER_DECISION_MODEL', ''),
   openRouterAdaptationModel: envString('OPENROUTER_ADAPTATION_MODEL', ''),
   openRouterExtractionModel: envString('OPENROUTER_EXTRACTION_MODEL', ''),
+  /** When true or a hop count, Express trusts X-Forwarded-* from proxies (see README). */
+  trustProxy: parseTrustProxy(),
+  /** ISO country unknown → use this market (US | EU | IN | ROW). */
+  defaultMarketId: envString('DEFAULT_MARKET_ID', 'ROW').toUpperCase(),
 };
 
 /** Effective OpenRouter model for a tier (falls back to openRouterModel). */

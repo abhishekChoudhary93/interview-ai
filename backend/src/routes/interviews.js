@@ -10,6 +10,8 @@ import {
   processInterviewTurn,
 } from '../services/interviewSessionService.js';
 import { finalizeOrchestratedInterview } from '../services/interviewCompleteService.js';
+import { recordSessionEndMetadata } from '../services/interviewDebriefContext.js';
+import { YEARS_EXPERIENCE_BANDS } from '../services/interviewLevel.js';
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -28,7 +30,55 @@ function toIso(d = new Date()) {
   return d.toISOString();
 }
 
-export function serializeInterviewDoc(doc) {
+/**
+ * Plain transcript for clients (avoids Mongoose subdoc / JSON edge cases).
+ * Mirrors frontend buildReportTranscriptMessages: turns first, else questions Q/A.
+ * @param {Record<string, unknown>} interviewPlain from doc.toObject()
+ */
+export function buildTranscriptMessagesForApi(interviewPlain) {
+  const rawTurns = interviewPlain.conversation_turns;
+  const turns = Array.isArray(rawTurns)
+    ? rawTurns.map((t) => (t && typeof t.toObject === 'function' ? t.toObject() : t)).filter(Boolean)
+    : [];
+
+  const messages = [];
+  for (const t of turns) {
+    const content = t?.content != null ? String(t.content).trim() : '';
+    if (!content) continue;
+    const role = String(t?.role || '').toLowerCase() === 'interviewer' ? 'interviewer' : 'candidate';
+    messages.push({ role, content });
+  }
+
+  const orchestrated = Boolean(interviewPlain.template_id && interviewPlain.execution_plan);
+  if (orchestrated && messages[0]?.role === 'candidate') {
+    const recovered = String(interviewPlain.questions?.[0]?.question || '').trim();
+    const opening = String(interviewPlain.orchestrator_state?.pending_question_text || '').trim();
+    if (recovered) {
+      messages.unshift({ role: 'interviewer', content: recovered });
+    } else if (opening) {
+      messages.unshift({ role: 'interviewer', content: opening });
+    }
+  }
+
+  if (messages.length > 0) {
+    return messages;
+  }
+
+  const qs = Array.isArray(interviewPlain.questions) ? interviewPlain.questions : [];
+  for (const q of qs) {
+    const qt = q?.question != null ? String(q.question).trim() : '';
+    if (qt) messages.push({ role: 'interviewer', content: qt });
+    const an = q?.answer != null ? String(q.answer).trim() : '';
+    if (an) messages.push({ role: 'candidate', content: an });
+  }
+  return messages;
+}
+
+/**
+ * @param {import('mongoose').Document | Record<string, unknown>} doc
+ * @param {{ includeTranscript?: boolean }} [options]
+ */
+export function serializeInterviewDoc(doc, options = {}) {
   if (!doc) return null;
   const o = doc.toObject ? doc.toObject() : doc;
   const {
@@ -40,11 +90,15 @@ export function serializeInterviewDoc(doc) {
     updatedAt,
     ...rest
   } = o;
-  return {
+  const out = {
     id: clientId,
     orchestration_enabled: config.orchestrationEnabled,
     ...rest,
   };
+  if (options.includeTranscript) {
+    out.transcript_messages = buildTranscriptMessagesForApi(o);
+  }
+  return out;
 }
 
 router.get('/', async (req, res) => {
@@ -70,6 +124,7 @@ router.get('/', async (req, res) => {
   }
 });
 
+/** POST body (orchestrated interviews): role_title, role_track, company, experience_level, years_experience_band (0_2|2_5|5_8|8_12|12_plus), interview_type, interview_mode, industry (optional). */
 router.post('/', async (req, res) => {
   try {
     const userObjectId = toUserObjectId(req.userId);
@@ -79,6 +134,13 @@ router.post('/', async (req, res) => {
     const body = req.body || {};
     const clientId =
       typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `iv-${Date.now()}`;
+
+    const yb = body.years_experience_band;
+    if (yb != null && yb !== '' && !YEARS_EXPERIENCE_BANDS.includes(String(yb))) {
+      return res.status(400).json({
+        error: `Invalid years_experience_band. Allowed: ${YEARS_EXPERIENCE_BANDS.join(', ')}`,
+      });
+    }
 
     let template_id;
     let template_version;
@@ -104,6 +166,7 @@ router.post('/', async (req, res) => {
       role_track: body.role_track,
       company: body.company,
       experience_level: body.experience_level,
+      years_experience_band: body.years_experience_band || undefined,
       interview_type: body.interview_type,
       industry: body.industry || '',
       interview_mode: body.interview_mode ?? 'chat',
@@ -182,10 +245,32 @@ router.post('/:clientId/session/complete', async (req, res) => {
       return res.status(400).json({ error: 'Not an orchestrated interview' });
     }
     if (doc.status === 'completed') {
-      return res.json(serializeInterviewDoc(doc));
+      return res.json(serializeInterviewDoc(doc, { includeTranscript: true }));
     }
+    if (!Array.isArray(doc.questions) || doc.questions.length === 0) {
+      return res.status(400).json({
+        error: 'Answer at least one question before ending the session so we can generate a report.',
+      });
+    }
+    let candidateEndedEarlyFromUi = false;
+    if (doc.orchestrator_state && !doc.orchestrator_state.interview_done) {
+      candidateEndedEarlyFromUi = true;
+      doc.orchestrator_state.interview_done = true;
+      doc.orchestrator_state.pending_question_text = '';
+      if (!Array.isArray(doc.conversation_turns)) doc.conversation_turns = [];
+      doc.conversation_turns.push({
+        role: 'interviewer',
+        content:
+          'You ended the session here — we will generate feedback from everything you shared so far.',
+        kind: 'early_complete',
+      });
+    }
+    recordSessionEndMetadata(doc, {
+      candidateTriggeredEnd: candidateEndedEarlyFromUi,
+      source: candidateEndedEarlyFromUi ? 'session_complete' : 'session_complete_report',
+    });
     await finalizeOrchestratedInterview(doc);
-    return res.json(serializeInterviewDoc(doc));
+    return res.json(serializeInterviewDoc(doc, { includeTranscript: true }));
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: e.message || 'Complete failed' });
@@ -203,7 +288,7 @@ router.get('/:clientId', async (req, res) => {
       clientId: req.params.clientId,
     }).exec();
     if (!doc) return res.status(404).json({ error: 'Not found' });
-    return res.json(serializeInterviewDoc(doc));
+    return res.json(serializeInterviewDoc(doc, { includeTranscript: true }));
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'Get failed' });
@@ -227,7 +312,7 @@ router.patch('/:clientId', async (req, res) => {
     delete patch.userId;
     Object.assign(doc, patch);
     await doc.save();
-    return res.json(serializeInterviewDoc(doc));
+    return res.json(serializeInterviewDoc(doc, { includeTranscript: true }));
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'Update failed' });

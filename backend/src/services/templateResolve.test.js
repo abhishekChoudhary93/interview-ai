@@ -26,3 +26,14 @@ test('Backend keyword resolves to backend_engineer_senior', () => {
   const r = resolveTemplateId({ role_title: 'Backend Engineer', experience_level: 'senior' });
   assert.equal(r.template_id, 'backend_engineer_senior');
 });
+
+test('system_design interview type resolves to system_design_video_platform', () => {
+  const r = resolveTemplateId({
+    role_title: 'Engineering Manager',
+    role_track: 'sdm',
+    interview_type: 'system_design',
+    experience_level: 'senior',
+  });
+  assert.equal(r.template_id, 'system_design_video_platform');
+  assert.equal(r.template_version, '1.0');
+});

@@ -1,7 +1,7 @@
 function mockQuestionFromPrompt(prompt) {
   const role = (prompt.match(/Role:\s*([^\n]+)/) || [])[1]?.trim() || 'this role';
   const company = (prompt.match(/Company:\s*([^\n]+)/) || [])[1]?.trim() || 'the company';
-  const qMatch = prompt.match(/Question number:\s*(\d+)\s+of\s+(\d+)/);
+  const qMatch = prompt.match(/Question number:\s*(\d+)\s+of\s*(\d+)/);
   const n = qMatch ? qMatch[1] : '1';
   return `[Mock] Question ${n}: Describe a situation where you drove impact as ${role} at ${company}. What was the outcome?`;
 }
@@ -9,6 +9,39 @@ function mockQuestionFromPrompt(prompt) {
 export function mockInvokeLLM({ prompt, response_json_schema: schema }) {
   if (schema?.properties) {
     const keys = Object.keys(schema.properties);
+
+    if (keys.includes('verdict_reason') && keys.includes('faang_bar_assessment') && keys.includes('completion_note')) {
+      return {
+        verdict: 'Hire',
+        verdict_reason:
+          'Mock debrief: coherent thread and reasonable clarifying questions. Push further on failure modes and concrete numbers next time.',
+        completion_note: 'Mock: 5 of 5 sections touched in ~45 minutes (simulated coverage).',
+        section_scores: {
+          requirements: { score: 3, status: 'completed', comment: 'Mock: bounded scope before designing.' },
+          high_level_design: { score: 3, status: 'completed', comment: 'Mock: separated upload vs playback paths.' },
+          deep_dive: { score: 2, status: 'partial', comment: 'Mock: thin on encoding edge cases.' },
+          tradeoffs: { score: 3, status: 'completed', comment: 'Mock: articulated cost vs latency.' },
+          operations: { score: 2, status: 'completed', comment: 'Mock: limited monitoring depth.' },
+        },
+        strengths: [
+          { point: 'Problem framing', evidence: 'I would clarify scale first.' },
+          { point: 'Component thinking', evidence: 'Separate upload path from playback.' },
+          { point: 'Trade-off awareness', evidence: 'We could optimize for cost or latency.' },
+        ],
+        improvements: [
+          { point: 'Failure modes', evidence: '(thin coverage in mock transcript)' },
+          { point: 'Quantitative estimates', evidence: '(few concrete numbers)' },
+          { point: 'Operational detail', evidence: '(limited monitoring discussion)' },
+        ],
+        faang_bar_assessment:
+          'Mock FAANG read: bar cleared on communication and high-level structure; more depth on encoding/CDN and reliability would align with staff expectations.',
+        next_session_focus: [
+          'Back-of-the-envelope sizing',
+          'CDN and edge failure modes',
+          'Encoding pipeline resilience',
+        ],
+      };
+    }
 
     if (keys.includes('section_scores') && keys.includes('recommendation')) {
       return {
@@ -25,10 +58,50 @@ export function mockInvokeLLM({ prompt, response_json_schema: schema }) {
 
     if (keys.includes('action') && keys.includes('hint_level')) {
       const p = String(prompt || '').toLowerCase();
+      const base = {
+        probe_to_fire: '',
+        cross_question_seed: '',
+        notable_statement: '',
+        redirect_target: '',
+        update_signals: { strong: [], weak: [] },
+      };
       if (p.includes('stuck') || p.includes('not sure')) {
-        return { action: 'GIVE_HINT', reason: 'Candidate uncertain', hint_level: 2 };
+        return { ...base, action: 'GIVE_HINT', reason: 'Candidate uncertain', hint_level: 2 };
       }
-      return { action: 'GO_DEEPER', reason: 'Continue probing', hint_level: 1 };
+      if (p.includes('requirements_factual_clarification=true')) {
+        return {
+          ...base,
+          action: 'ANSWER_AND_CONTINUE',
+          reason: 'Requirements factual clarification',
+          hint_level: 0,
+        };
+      }
+      if (p.includes('candidate_seeking_direction=true')) {
+        return {
+          ...base,
+          action: 'REDIRECT',
+          reason: 'Candidate seeking direction',
+          hint_level: 0,
+          redirect_target: 'upload-to-playback path',
+        };
+      }
+      if (p.includes('clarify') || p.includes('scale') || p.includes('?')) {
+        return { ...base, action: 'LET_CANDIDATE_LEAD', reason: 'Clarifying turn', hint_level: 0 };
+      }
+      if (p.includes('requirements') && p.includes('ic_mid')) {
+        return { ...base, action: 'ANSWER_AND_CONTINUE', reason: 'Mid IC clarifying in requirements', hint_level: 0 };
+      }
+      return { ...base, action: 'GO_DEEPER', reason: 'Continue probing', hint_level: 0 };
+    }
+
+    if (keys.includes('time_adjustments') && keys.includes('priority_probes')) {
+      return {
+        time_adjustments: { requirements: 1 },
+        priority_probes: { requirements: ['Clarify read vs write ratio for this design.'] },
+        opening_framing:
+          '[Mock] Thanks for joining. We will work a focused system design today — start by stating your assumptions on users and scale, then we will go deeper.',
+        level_expectations: 'Mock: expects crisp scope before components and arrows.',
+      };
     }
 
     if (keys.includes('opening_question')) {
@@ -74,10 +147,11 @@ export function mockInvokeLLM({ prompt, response_json_schema: schema }) {
   }
 
   if (
+    String(prompt || '').includes('You are Alex') ||
     String(prompt || '').includes('You are Maya') ||
-    String(prompt || '').includes('senior engineering interviewer')
+    String(prompt || '').includes('Staff Engineer doing a FAANG')
   ) {
-    return `[Mock interviewer] Thanks for sharing that. Can you go one level deeper on the trade-offs you considered?`;
+    return `[Mock interviewer] Okay. Can you go one level deeper on the trade-offs you considered?`;
   }
 
   return mockQuestionFromPrompt(prompt || '');

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Loader2, MessageSquare, Send, Mic, Video } from "lucide-react";
+import { X, Loader2, MessageSquare, Send, Mic, Video, PauseCircle, ClipboardCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -15,28 +15,16 @@ import { invokeLLM } from '@/api/llm';
 import VoiceRecorder from "../components/VoiceRecorder";
 import VideoCallInterface from "../components/VideoCallInterface";
 import InterviewTranscript from "../components/InterviewTranscript";
+import { buildReportTranscriptMessages } from "@/utils/interviewReport";
 
 const TOTAL_QUESTIONS = 5;
 
 function buildDisplayMessages(interview, currentQuestion) {
-  const list = [];
-  const turns = interview?.conversation_turns;
-  if (turns?.length) {
-    for (const t of turns) {
-      list.push({ role: t.role, content: t.content });
-    }
-  } else {
-    for (const q of interview?.questions || []) {
-      list.push({ role: "interviewer", content: q.question });
-      list.push({ role: "candidate", content: q.answer });
-    }
-  }
+  const list = buildReportTranscriptMessages(interview);
   const last = list[list.length - 1];
-  if (
-    currentQuestion &&
-    (last?.content !== currentQuestion || last?.role !== "interviewer")
-  ) {
-    list.push({ role: "interviewer", content: currentQuestion });
+  const q = String(currentQuestion || "").trim();
+  if (q && (last?.content !== currentQuestion || last?.role !== "interviewer")) {
+    return [...list, { role: "interviewer", content: currentQuestion }];
   }
   return list;
 }
@@ -66,6 +54,8 @@ export default function Interview() {
   const [chatInput, setChatInput] = useState("");
   const [orchState, setOrchState] = useState(null);
   const sessionStartedRef = useRef(false);
+  const [sessionTick, setSessionTick] = useState(0);
+  const [isEndingSession, setIsEndingSession] = useState(false);
 
   const useOrchestration = Boolean(interview?.template_id);
 
@@ -75,38 +65,57 @@ export default function Interview() {
   );
 
   useEffect(() => {
+    if (!useOrchestration || !interview?.session_started_at) return undefined;
+    const id = setInterval(() => setSessionTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [useOrchestration, interview?.session_started_at]);
+
+  useEffect(() => {
     if (!interviewId) {
       navigate('/setup');
       return;
     }
     let cancelled = false;
+    sessionStartedRef.current = false;
     getInterview(interviewId)
       .then(async (data) => {
         if (cancelled) return;
-        setInterview(data);
-        if (data.template_id && data.status === 'in_progress') {
+        let row = data;
+        if (row.status === "paused") {
+          try {
+            await updateInterview(interviewId, { status: "in_progress" });
+            row = await getInterview(interviewId);
+          } catch {
+            /* keep paused row */
+          }
+        }
+        if (cancelled) return;
+        setInterview(row);
+        const canContinueOrchestration =
+          row.template_id && (row.status === "in_progress" || row.status === "paused");
+        if (canContinueOrchestration) {
           if (sessionStartedRef.current) return;
           sessionStartedRef.current = true;
           setIsGenerating(true);
-          let openingMsg = '';
+          let openingMsg = "";
           try {
             const session = await startInterviewSession(interviewId);
             if (cancelled) return;
-            openingMsg = session.interviewer_message || '';
+            openingMsg = session.interviewer_message || "";
             setCurrentQuestion(openingMsg);
             setOrchState(session.orchestrator_state);
             const fresh = await getInterview(interviewId);
             if (!cancelled) setInterview(fresh);
           } catch {
-            if (!cancelled) navigate('/dashboard');
+            if (!cancelled) navigate("/dashboard");
             return;
           }
           setIsGenerating(false);
-          if (data.interview_mode !== "chat") {
+          if (row.interview_mode !== "chat") {
             setTimeout(() => speakQuestion(openingMsg), 400);
           }
-        } else if (!data.template_id) {
-          generateQuestion(data, 0);
+        } else if (!row.template_id) {
+          generateQuestion(row, 0);
         } else {
           setIsGenerating(false);
         }
@@ -292,11 +301,71 @@ ${allAnswers.map((a, i) => `Q${i+1}: ${a.question}\nScores: Quality ${a.score_an
 
   const avg = (arr, key) => Math.round(arr.reduce((s, a) => s + (a[key] || 0), 0) / arr.length);
 
-  const exitInterview = async () => {
-    if (confirm("Exit interview? Your progress will be lost.")) {
-      window.speechSynthesis?.cancel();
-      await updateInterview(interviewId, { status: 'abandoned' });
+  const pauseInterviewForLater = async () => {
+    if (
+      !confirm(
+        "Pause this interview? Your progress is saved — you can resume later from the dashboard."
+      )
+    ) {
+      return;
+    }
+    window.speechSynthesis?.cancel();
+    try {
+      await updateInterview(interviewId, { status: "paused" });
       navigate("/dashboard");
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const exitInterview = async () => {
+    if (
+      !confirm(
+        "Exit and abandon this interview? Progress will not be saved for later (status: abandoned)."
+      )
+    ) {
+      return;
+    }
+    window.speechSynthesis?.cancel();
+    await updateInterview(interviewId, { status: "abandoned" });
+    navigate("/dashboard");
+  };
+
+  const canEndEarlyForReport = () => {
+    if (useOrchestration) {
+      return (interview?.questions?.length || 0) >= 1;
+    }
+    return answers.length >= 1;
+  };
+
+  const endSessionAndGetReport = async () => {
+    if (!canEndEarlyForReport()) {
+      window.alert("Answer at least one question so we have material for your report.");
+      return;
+    }
+    if (
+      !confirm(
+        "End this interview now and generate your report from everything you have answered so far?"
+      )
+    ) {
+      return;
+    }
+    window.speechSynthesis?.cancel();
+    setIsEndingSession(true);
+    try {
+      if (useOrchestration) {
+        await interviewSessionComplete(interviewId);
+        navigate(`/report?id=${interviewId}`);
+      } else {
+        await finishInterview(answers);
+      }
+    } catch (e) {
+      console.error(e);
+      window.alert(
+        e?.data?.error || e?.message || "Could not complete the session. Try again or use Pause to save progress."
+      );
+    } finally {
+      setIsEndingSession(false);
     }
   };
 
@@ -310,7 +379,18 @@ ${allAnswers.map((a, i) => `Q${i+1}: ${a.question}\nScores: Quality ${a.score_an
 
   const mode = interview.interview_mode || "chat";
   const sectionsTotal = interview.execution_plan?.sections?.length || 0;
-  const sectionIdx = (orchState?.current_section_index ?? 0) + 1;
+  const orch = interview.orchestrator_state || orchState;
+  const sectionIdx = (orch?.current_section_index ?? 0) + 1;
+  const currentSection = interview.execution_plan?.sections?.[orch?.current_section_index ?? 0];
+  const currentSectionName = currentSection?.name || "";
+
+  const sessionStartMs = interview.session_started_at
+    ? new Date(interview.session_started_at).getTime()
+    : null;
+  void sessionTick;
+  const elapsedSeconds =
+    sessionStartMs != null ? Math.max(0, Math.floor((Date.now() - sessionStartMs) / 1000)) : 0;
+  const elapsedClock = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
 
   const questionComposer = (
     <>
@@ -382,13 +462,14 @@ ${allAnswers.map((a, i) => `Q${i+1}: ${a.question}\nScores: Quality ${a.score_an
               </span>
               {useOrchestration && sectionsTotal > 0 ? (
                 <>
-                  <span className="text-xs text-muted-foreground">
-                    Section {sectionIdx}/{sectionsTotal}
+                  <span className="text-xs text-muted-foreground max-w-[140px] sm:max-w-none truncate sm:whitespace-normal" title={currentSectionName}>
+                    {currentSectionName || `Section ${sectionIdx}`}
+                  </span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {elapsedClock} elapsed
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    {orchState?.elapsed_minutes != null
-                      ? `${Math.round(orchState.elapsed_minutes)} min elapsed`
-                      : ''}
+                    {sectionIdx}/{sectionsTotal}
                   </span>
                 </>
               ) : (
@@ -403,15 +484,60 @@ ${allAnswers.map((a, i) => `Q${i+1}: ${a.question}\nScores: Quality ${a.score_an
               )}
             </div>
           </div>
-          <Button variant="ghost" size="icon" onClick={exitInterview} className="rounded-xl flex-shrink-0">
-            <X className="w-5 h-5" />
-          </Button>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {(interview.status === "in_progress" || interview.status === "paused") && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={endSessionAndGetReport}
+                disabled={isProcessing || isEndingSession || !canEndEarlyForReport()}
+                className="rounded-xl gap-1.5 border-border text-foreground hover:bg-muted/60"
+                title={
+                  canEndEarlyForReport()
+                    ? "Finish now and open your scored report"
+                    : "Submit at least one answer first"
+                }
+              >
+                {isEndingSession ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <ClipboardCheck className="w-4 h-4" />
+                )}
+                <span className="hidden sm:inline text-xs font-medium">End &amp; report</span>
+              </Button>
+            )}
+            {useOrchestration && (interview.status === "in_progress" || interview.status === "paused") && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={pauseInterviewForLater}
+                disabled={isProcessing || isEndingSession}
+                className="rounded-xl gap-1.5 text-muted-foreground hover:text-foreground"
+                title="Pause and resume later"
+              >
+                <PauseCircle className="w-5 h-5" />
+                <span className="hidden sm:inline text-xs font-medium">Pause</span>
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={exitInterview}
+              disabled={isEndingSession}
+              className="rounded-xl"
+              title="Exit and abandon"
+            >
+              <X className="w-5 h-5" />
+            </Button>
+          </div>
         </div>
       </div>
 
-      <div className="flex-1 flex items-start justify-center px-4 py-8">
-        <div className="w-full max-w-6xl flex flex-col lg:flex-row gap-6 items-stretch">
-          <div className="flex-1 min-w-0">
+      <div className="flex-1 flex min-h-0 justify-center px-4 py-8">
+        <div className="w-full max-w-6xl flex flex-col lg:flex-row gap-6 items-stretch min-h-0 lg:min-h-[calc(100dvh-9rem)]">
+          <div className="flex-1 min-w-0 min-h-0 flex flex-col">
             <AnimatePresence mode="wait">
               {isGenerating ? (
                 <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-center py-16 rounded-3xl border border-border bg-card/50">
@@ -455,7 +581,7 @@ ${allAnswers.map((a, i) => `Q${i+1}: ${a.question}\nScores: Quality ${a.score_an
 
           <InterviewTranscript
             messages={displayMessages}
-            className="w-full lg:w-[min(100%,380px)] lg:flex-shrink-0 h-[min(320px,42vh)] lg:h-[min(620px,calc(100vh-9rem))]"
+            className="min-h-0 w-full lg:w-[min(100%,400px)] lg:flex-shrink-0 max-h-[min(340px,42dvh)] sm:max-h-[min(400px,48dvh)] lg:max-h-[min(520px,calc(100dvh-11rem))] lg:self-stretch"
           />
         </div>
       </div>

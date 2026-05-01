@@ -7,7 +7,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "seed": "node src/seed/seedCli.js",
-    "test": "node --test src/services/templateResolve.test.js"
+    "test": "node --test src/services/templateResolve.test.js src/services/resolveMarket.test.js src/services/executionPlanMerge.test.js src/services/interviewLevel.test.js src/services/orchestratorTopicSignals.test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

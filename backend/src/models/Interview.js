@@ -35,6 +35,8 @@ const interviewSchema = new mongoose.Schema(
     role_track: String,
     company: String,
     experience_level: String,
+    /** Calendar years band: 0_2 | 2_5 | 5_8 | 8_12 | 12_plus — drives IC_MID vs IC_STAFF with experience_level. */
+    years_experience_band: String,
     interview_type: String,
     industry: String,
     interview_mode: { type: String, default: 'chat' },
@@ -59,6 +61,8 @@ const interviewSchema = new mongoose.Schema(
     session_started_at: Date,
     conversation_turns: { type: [conversationTurnSchema], default: [] },
     orch_schema_version: { type: Number, default: 0 },
+    /** Structured FAANG-style debrief when execution_plan includes primary_question (e.g. system design). */
+    debrief: { type: mongoose.Schema.Types.Mixed },
   },
   { timestamps: true }
 );

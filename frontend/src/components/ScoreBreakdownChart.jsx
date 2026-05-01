@@ -48,7 +48,7 @@ export function ScoreProgressionChart({ questions }) {
   if (!questions?.length) return null;
 
   const data = questions.map((q, i) => ({
-    name: `Q${i + 1}`,
+    name: q._chartLabel || `Q${i + 1}`,
     quality: q.score_answer_quality,
     clarity: q.score_english_clarity,
     communication: q.score_communication,

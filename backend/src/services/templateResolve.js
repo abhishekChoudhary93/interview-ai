@@ -4,6 +4,7 @@ export const KNOWN_TEMPLATE_IDS = [
   'backend_engineer_senior',
   'frontend_engineer_mid',
   'product_manager_growth',
+  'system_design_video_platform',
 ];
 
 /**
@@ -28,6 +29,12 @@ export function resolveTemplateId(opts = {}) {
   const level = String(opts.experience_level || '').toLowerCase();
   const track = String(opts.role_track || '').toLowerCase();
   const interviewType = String(opts.interview_type || '').toLowerCase();
+
+  /** System design: dedicated template (wins over role-based defaults). */
+  if (interviewType === 'system_design') {
+    const t = loadRoleTemplate('system_design_video_platform');
+    return { template_id: t.template_id, template_version: t.version };
+  }
 
   const isSdmTrack =
     track === 'sdm' ||
@@ -57,12 +64,6 @@ export function resolveTemplateId(opts = {}) {
     role.includes('sre') ||
     role.includes('platform engineer') ||
     /\bapi\b/.test(role);
-
-  /** System design sessions bias toward backend-style rubric */
-  if (interviewType === 'system_design') {
-    const t = loadRoleTemplate('backend_engineer_senior');
-    return { template_id: t.template_id, template_version: t.version };
-  }
 
   if (isFrontend && !isBackend) {
     const t = loadRoleTemplate('frontend_engineer_mid');

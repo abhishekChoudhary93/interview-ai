@@ -21,10 +21,19 @@ import { createInterview } from '@/api/interviews';
 import { useAuth } from '@/lib/AuthContext';
 
 const experienceLevels = [
-  { value: "entry", label: "Entry / L3", desc: "0–2 years (or equivalent)" },
-  { value: "mid", label: "Mid / L4", desc: "3–5 years" },
-  { value: "senior", label: "Senior / L5", desc: "6–10 years" },
-  { value: "lead", label: "Staff+ / L6+", desc: "10+ years, scope at org level" },
+  { value: "entry", label: "Entry / L3", desc: "Typical leveling band for your role" },
+  { value: "mid", label: "Mid / L4", desc: "Typical leveling band for your role" },
+  { value: "senior", label: "Senior / L5", desc: "Typical leveling band for your role" },
+  { value: "lead", label: "Staff+ / L6+", desc: "Typical leveling band for your role" },
+];
+
+/** Calendar years in industry — calibrates IC_MID vs IC_STAFF behavior separately from title band. */
+const yearsExperienceBands = [
+  { value: "0_2", label: "0–2 years", desc: "Early career" },
+  { value: "2_5", label: "2–5 years", desc: "Building depth" },
+  { value: "5_8", label: "5–8 years", desc: "Strong ownership" },
+  { value: "8_12", label: "8–12 years", desc: "Staff-shaped scope" },
+  { value: "12_plus", label: "12+ years", desc: "Senior staff / principal trajectory" },
 ];
 
 /** System design, behavioral, mixed — technology interviews only */
@@ -97,6 +106,7 @@ export default function Setup() {
     role_title: "",
     company: "",
     experience_level: "",
+    years_experience_band: "",
     interview_type: "",
     industry: "",
     interview_mode: "",
@@ -107,7 +117,7 @@ export default function Setup() {
   const canProceed = () => {
     if (step === 1) return Boolean(form.role_track && form.role_title.trim());
     if (step === 2) return form.company.trim();
-    if (step === 3) return form.experience_level;
+    if (step === 3) return Boolean(form.experience_level && form.years_experience_band);
     if (step === 4) return Boolean(form.interview_type);
     if (step === 5) return Boolean(form.interview_mode);
     return true;
@@ -244,10 +254,11 @@ export default function Setup() {
           {step === 3 && (
             <StepWrapper
               icon={<Award className="w-6 h-6" />}
-              title="Experience band"
-              subtitle="Maps to typical leveling bands — we calibrate depth and expectations."
+              title="Experience"
+              subtitle="Title band plus years in industry — we use both to calibrate depth (e.g. staff-level deflection vs answering clarifying questions)."
             >
-              <div className="grid grid-cols-2 gap-3">
+              <p className="text-sm font-medium text-foreground mb-2">Typical title / leveling band</p>
+              <div className="grid grid-cols-2 gap-3 mb-8">
                 {experienceLevels.map(l => (
                   <button
                     key={l.value}
@@ -261,6 +272,24 @@ export default function Setup() {
                   >
                     <p className="font-semibold text-sm">{l.label}</p>
                     <p className="text-xs text-muted-foreground mt-1">{l.desc}</p>
+                  </button>
+                ))}
+              </div>
+              <p className="text-sm font-medium text-foreground mb-2">Years of experience (calendar)</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {yearsExperienceBands.map((y) => (
+                  <button
+                    key={y.value}
+                    type="button"
+                    onClick={() => set("years_experience_band", y.value)}
+                    className={`p-3 rounded-xl border text-left transition-all duration-200 ${
+                      form.years_experience_band === y.value
+                        ? "bg-accent/10 border-accent/30 ring-2 ring-accent/20"
+                        : "bg-card border-border hover:border-accent/20"
+                    }`}
+                  >
+                    <p className="font-semibold text-sm">{y.label}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{y.desc}</p>
                   </button>
                 ))}
               </div>

@@ -1,4 +1,7 @@
 export const ACTIONS = {
+  LET_CANDIDATE_LEAD: 'LET_CANDIDATE_LEAD',
+  ANSWER_AND_CONTINUE: 'ANSWER_AND_CONTINUE',
+  REDIRECT: 'REDIRECT',
   GO_DEEPER: 'GO_DEEPER',
   GIVE_HINT: 'GIVE_HINT',
   EXHAUSTED_HINTS: 'EXHAUSTED_HINTS',
@@ -14,11 +17,13 @@ export const TIME_OVERFLOW_FACTOR = 1.3;
  * @param {object} decision { action, reason, hint_level }
  */
 export function applyHardTimeGates(state, executionPlan, decision) {
+  const base = { ...decision, forced: false };
   const sec = executionPlan?.sections?.[state.current_section_index];
   const budget = sec?.time_budget_minutes ?? 15;
   const spent = state.current_section_minutes_spent || 0;
   if (spent > budget * TIME_OVERFLOW_FACTOR) {
     return {
+      ...base,
       action: ACTIONS.WRAP_TOPIC,
       reason: 'Hard gate: section overtime',
       hint_level: 0,
@@ -28,13 +33,14 @@ export function applyHardTimeGates(state, executionPlan, decision) {
   const totalBudget = executionPlan?.total_minutes ?? 60;
   if ((state.elapsed_minutes || 0) >= totalBudget - 0.01) {
     return {
+      ...base,
       action: ACTIONS.CLOSE_INTERVIEW,
       reason: 'Hard gate: total duration',
       hint_level: 0,
       forced: true,
     };
   }
-  return { ...decision, forced: false };
+  return base;
 }
 
 export function advanceClock(state, nowMs) {
@@ -56,6 +62,7 @@ export function createInitialOrchestratorState(openingText, nowMs) {
     current_section_minutes_spent: 0,
     depth_level: 1,
     hints_given_this_question: 0,
+    hints_given_session: 0,
     questions_asked_this_section: 0,
     candidate_knowledge_map: { strong: [], weak: [] },
     notable_statements: [],
@@ -66,7 +73,17 @@ export function createInitialOrchestratorState(openingText, nowMs) {
     last_turn_at_ms: nowMs,
     interview_done: false,
     last_action: null,
+    last_decision_action: null,
+    consecutive_same_topic_turns: 0,
+    last_probe_topic: null,
+    uncertain_response_streak: 0,
+    current_thread: {
+      topic: '',
+      turns_on_thread: 0,
+      candidate_progress: 'improving',
+    },
     turn_count: 0,
+    live_evaluation: {},
   };
 }
 

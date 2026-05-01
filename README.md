@@ -21,7 +21,7 @@ You can also run **`./scripts/start.sh`** (same as `npm start`) and **`./scripts
 Then open **http://localhost:5173** in your browser.
 
 - **API:** http://localhost:3001 (used by the SPA; configure `VITE_API_URL` in Compose if needed)
-- **MongoDB:** internal to Compose by default (no host port). To debug from the host, temporarily add `ports: ["27017:27017"]` under `mongo` in [docker-compose.yml](docker-compose.yml) if nothing else is using `27017`.
+- **MongoDB:** `27017` is published to the host for tools like Compass or `mongosh` — connect to `mongodb://127.0.0.1:27017/interview_ai`. If another process already uses `27017`, change or remove the `ports` mapping under `mongo` in [docker-compose.yml](docker-compose.yml).
 
 ## Test user (seeded demo account)
 
@@ -54,6 +54,8 @@ Use **Register** on the landing page. New accounts start with an empty history u
 | [docker-compose.yml](docker-compose.yml) | **Local:** Mongo + backend + Vite (HMR bind mount) |
 | [docker-compose.prod.yml](docker-compose.prod.yml) | **Production:** backend + nginx static frontend; external MongoDB |
 | [backend/src/config.js](backend/src/config.js) | Backend env (single module) |
+| [backend/src/config/markets.js](backend/src/config/markets.js) | Per-region **Free trial + Pro** catalog (placeholders) |
+| [backend/src/routes/public.js](backend/src/routes/public.js) | Public API (`/api/public/market-context`) |
 | [`.env.local`](.env.local) | Local Docker env (JWT, demo user overrides) |
 | [`.env.production`](.env.production) | Production Docker env (MongoDB URI, CORS, `VITE_API_URL`, ports) |
 | [frontend/.env.development](frontend/.env.development) | Vite dev (`VITE_API_URL` when running the SPA on the host) |
@@ -98,6 +100,35 @@ If you are not using [docker-compose.prod.yml](docker-compose.prod.yml), you can
 docker build -f frontend/Dockerfile --build-arg VITE_API_URL=https://api.example.com -t interview-ai-web .
 ```
 
+## Regional pricing & markets
+
+The landing **Pricing** section loads **`GET /api/public/market-context`**. The backend picks a **market** (`US`, `EU`, `IN`, or `ROW`) from the caller’s country signal and returns a **Free trial** and **Pro** monthly price for that market (placeholders; no team/seat tier). The UI shows only those two plans—no country or region controls on the page. Catalog: [backend/src/config/markets.js](backend/src/config/markets.js); resolver: [backend/src/services/resolveMarket.js](backend/src/services/resolveMarket.js).
+
+**Production geo:** Prefer an edge that sets a country header on requests to the API, for example **`CF-IPCountry`** (Cloudflare), **`X-Vercel-IP-Country`**, or a custom **`X-App-Geo-Country`** from your proxy. If no country is detected, the API uses **`DEFAULT_MARKET_ID`** (default `ROW`).
+
+**Behind a reverse proxy:** Set **`TRUST_PROXY`** so Express honors `X-Forwarded-*` (e.g. `TRUST_PROXY=1` or `true`). Needed for correct client IP if you later add server-side GeoIP.
+
+**Local / development only** (`APP_ENV` is `local` or `development`):
+
+- Header **`X-Debug-Country`**: ISO country code (e.g. `IN`, `DE`).
+- Query **`debugCountry`** on the API URL (e.g. `?debugCountry=FR`).
+
+These overrides are **ignored in production**.
+
+**Advanced / testing:** The API still accepts **`X-Preferred-Market`** (`US` | `EU` | `IN` | `ROW`) to force a market (e.g. `curl` or a browser extension). The landing page does not expose a region picker.
+
+**Quick checks:**
+
+```bash
+# India market (local API; requires APP_ENV local or development)
+curl -s -H "X-Debug-Country: IN" http://localhost:3001/api/public/market-context | jq
+
+# Simulate Cloudflare EU
+curl -s -H "CF-IPCountry: FR" http://localhost:3001/api/public/market-context | jq
+```
+
+Backend tests (includes resolver): `npm test -w backend`.
+
 ## Environment variables
 
 Committed env files: [`.env.local`](.env.local) (local Docker), [`.env.production`](.env.production) (production Docker), [frontend/.env.development](frontend/.env.development) and [frontend/.env.production](frontend/.env.production) (Vite on the host).
@@ -110,5 +141,7 @@ Committed env files: [`.env.local`](.env.local) (local Docker), [`.env.productio
 | `JWT_SECRET` | Dev default allowed | Must be a strong secret; dev placeholders are rejected at startup |
 | `FRONTEND_ORIGIN` | `http://localhost:5173` | Your real SPA origin(s), comma-separated |
 | `VITE_API_URL` | `http://localhost:3001` in local Compose | Set when the browser must call a different API host than the SPA |
+| `TRUST_PROXY` | unset (optional) | `true`, `1`, or hop count so Express trusts proxy forwarding headers |
+| `DEFAULT_MARKET_ID` | `ROW` | Fallback market when country cannot be inferred (`US`, `EU`, `IN`, `ROW`) |
 
 Non-Docker backend: set `APP_ENV=local` and point `MONGODB_URI` at your DB; use `npm run seed -w backend` only for local-like `APP_ENV`.

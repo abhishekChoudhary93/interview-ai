@@ -1,62 +1,84 @@
 import { invokeLLM } from './llmInvoke.js';
+import { deriveCandidateLevel } from './interviewLevel.js';
 
-const ADAPTATION_SCHEMA = {
+const PLAN_GENERATION_SCHEMA = {
   type: 'object',
   properties: {
-    topic_priority_adjustments: { type: 'object' },
-    depth_allocation: { type: 'object' },
-    pre_loaded_probes: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          trigger: { type: 'string' },
-          probe: { type: 'string' },
-          section_id: { type: 'string' },
-        },
-      },
-    },
-    cross_question_seeds: { type: 'array', items: { type: 'string' } },
-    skip_list: { type: 'array', items: { type: 'string' } },
-    opening_question: {
+    time_adjustments: {
       type: 'object',
-      properties: {
-        chosen: { type: 'string' },
-        reason: { type: 'string' },
+      additionalProperties: { type: 'number' },
+    },
+    priority_probes: {
+      type: 'object',
+      additionalProperties: {
+        type: 'array',
+        items: { type: 'string' },
       },
     },
+    opening_framing: { type: 'string' },
+    level_expectations: { type: 'string' },
   },
+  required: ['time_adjustments', 'priority_probes', 'opening_framing', 'level_expectations'],
 };
+
+function templateOutline(template) {
+  const pq = template.primary_question;
+  const pqBrief =
+    pq && typeof pq === 'object'
+      ? {
+          title: pq.title,
+          context: typeof pq.context === 'string' ? pq.context.slice(0, 400) : '',
+        }
+      : null;
+  const sections = (template.sections || []).map((s) => ({
+    id: s.id,
+    name: s.name,
+    time_budget_minutes: s.time_budget_minutes,
+    objectives: Array.isArray(s.objectives) ? s.objectives.slice(0, 6) : [],
+  }));
+  return JSON.stringify({ template_id: template.template_id, primary_question: pqBrief, sections }, null, 0);
+}
 
 /**
  * @param {object} opts
  * @param {object} opts.template RoleTemplate JSON
  * @param {object[]} opts.historySnapshots InterviewSignalSnapshot plain objects or []
- * @param {object} opts.interview { role_title, role_track, company, experience_level, interview_type, interview_mode, industry }
+ * @param {object} opts.interview { role_title, role_track, company, experience_level, years_experience_band, interview_type, interview_mode, industry }
  */
 export async function runInterviewAdaptation({ template, historySnapshots = [], interview = {} }) {
-  const prompt = `You are a senior interviewer preparing a personalized interview execution plan.
+  const level = deriveCandidateLevel(interview);
+  const prompt = `You are a FAANG interviewer preparing a system design interview.
+Level: ${level}
+Task: Given the question and section template below, return a JSON execution plan.
 
-BASE TEMPLATE:
-${JSON.stringify(template, null, 2)}
+TEMPLATE OUTLINE:
+${templateOutline(template)}
 
 CANDIDATE HISTORY (past interviews — may be empty):
-${JSON.stringify(historySnapshots, null, 2)}
+${JSON.stringify(historySnapshots, null, 0)}
 
 INTERVIEW META:
-${JSON.stringify(interview, null, 2)}
+${JSON.stringify(interview, null, 0)}
 
-RULES (non-negotiable):
-- Required sections in the template cannot be removed.
-- Time budgets cannot be exceeded.
-- Minimum question counts must remain achievable.
-- You are PERSONALIZING execution, not redesigning the interview.
+Return ONLY this JSON shape, no preamble:
+{
+  "time_adjustments": { "section_id": number_minutes_delta },
+  "priority_probes": { "section_id": ["probe1", "probe2"] },
+  "opening_framing": "Natural FAANG-style opening for this candidate level",
+  "level_expectations": "One sentence on what bar looks like for ${level}"
+}
 
-Return JSON only with: topic_priority_adjustments, depth_allocation, pre_loaded_probes (trigger + probe + optional section_id), cross_question_seeds, skip_list, opening_question { chosen, reason }.`;
+Rules:
+- SDM: weight tradeoffs + org sections more in your probes and time deltas; reduce deep-dive time vs template where sensible.
+- IC_STAFF: expect them to drive requirements; add depth to deep-dive section via time_adjustments and priority_probes.
+- IC_MID: standard weights; interviewer-side clarifying answers are appropriate in requirements phase (reflect in opening_framing tone).
+- time_adjustments: small integers (e.g. -3 to +5 per section); must keep interview feasible — do not zero out required sections.
+- priority_probes: concrete follow-up strings tied to section ids from the outline.
+- opening_framing: 2-5 sentences, natural FAANG voice, present primary_question without rubric jargon; invite them into the first section.`;
 
   return invokeLLM({
     prompt,
-    response_json_schema: ADAPTATION_SCHEMA,
+    response_json_schema: PLAN_GENERATION_SCHEMA,
     modelTier: 'adaptation',
   });
 }

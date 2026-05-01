@@ -17,6 +17,10 @@
           "lead"
         ]
       },
+      "years_experience_band": {
+        "type": "string",
+        "enum": ["0_2", "2_5", "5_8", "8_12", "12_plus"]
+      },
       "interview_type": {
         "type": "string",
         "enum": [

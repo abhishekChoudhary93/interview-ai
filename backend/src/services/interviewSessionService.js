@@ -12,8 +12,60 @@ import {
   createInitialOrchestratorState,
 } from './orchestratorRuntime.js';
 import { getProbesForCurrentSection, matchPreloadedProbes } from './probeMatching.js';
+import { recordSessionEndMetadata } from './interviewDebriefContext.js';
+import { mergeEvaluationUpdate } from './liveEvaluationMerge.js';
+import {
+  applyUncertaintyStreakFromCandidateMessage,
+  computeCandidateProgress,
+  detectExplicitTopicExit,
+  updateProbeCountersAfterDecision,
+} from './orchestratorTopicSignals.js';
+
+function mergeDecisionMetadata(state, decision) {
+  const u = decision?.update_signals;
+  if (u && typeof u === 'object') {
+    if (!state.candidate_knowledge_map) state.candidate_knowledge_map = { strong: [], weak: [] };
+    for (const s of Array.isArray(u.strong) ? u.strong : []) {
+      const t = String(s || '').trim();
+      if (t) state.candidate_knowledge_map.strong.push(t);
+    }
+    for (const w of Array.isArray(u.weak) ? u.weak : []) {
+      const t = String(w || '').trim();
+      if (t) state.candidate_knowledge_map.weak.push(t);
+    }
+    state.candidate_knowledge_map.strong = state.candidate_knowledge_map.strong.slice(-25);
+    state.candidate_knowledge_map.weak = state.candidate_knowledge_map.weak.slice(-25);
+  }
+  const ns = decision?.notable_statement;
+  if (ns && typeof ns === 'string' && ns.trim().length > 10) {
+    state.notable_statements = (state.notable_statements || []).slice(-19);
+    state.notable_statements.push(ns.trim().slice(0, 280));
+  }
+}
 
 const MAX_TURNS = 35;
+
+function guardCloseUnderMinDuration(state, decision) {
+  const totalDurationClose =
+    decision.forced && String(decision.reason || '').includes('total duration');
+  const maxTurnsClose = decision.forced && String(decision.reason || '').includes('Max turns');
+  if (
+    decision.action === ACTIONS.CLOSE_INTERVIEW &&
+    (state.elapsed_minutes || 0) < 15 &&
+    !totalDurationClose &&
+    !maxTurnsClose
+  ) {
+    return {
+      ...decision,
+      action: ACTIONS.WRAP_TOPIC,
+      reason:
+        'Guard: elapsed under 15 minutes — cannot close yet; continue the session (wrap or probe instead).',
+      hint_level: 0,
+      forced: true,
+    };
+  }
+  return decision;
+}
 
 function scoringSchema(isVideo) {
   return {
@@ -35,6 +87,7 @@ Question: "${questionText}"
 Answer: "${answerText}"
 Role: ${interview.role_title} at ${interview.company}
 Experience Level: ${interview.experience_level}
+Years experience band: ${interview.years_experience_band || '(not set)'}
 Interview Mode: ${interview.interview_mode}
 
 Score on these dimensions (0-100 each):
@@ -97,6 +150,15 @@ function applyStructuralDecision(state, executionPlan, decision) {
 
   if (decision.action === ACTIONS.GIVE_HINT) {
     state.hints_given_this_question = (state.hints_given_this_question || 0) + 1;
+    state.hints_given_session = (state.hints_given_session || 0) + 1;
+  }
+
+  if (
+    decision.action === ACTIONS.GO_DEEPER ||
+    decision.action === ACTIONS.PIVOT_CROSS ||
+    decision.action === ACTIONS.REDIRECT
+  ) {
+    state.depth_level = Math.min(4, (state.depth_level || 1) + 1);
   }
 }
 
@@ -131,6 +193,7 @@ export async function startInterviewSession(interview) {
       role_track: interview.role_track,
       company: interview.company,
       experience_level: interview.experience_level,
+      years_experience_band: interview.years_experience_band,
       interview_type: interview.interview_type,
       interview_mode: interview.interview_mode,
       industry: interview.industry,
@@ -156,6 +219,9 @@ export async function startInterviewSession(interview) {
   interview.session_started_at = new Date(now);
   interview.template_version = execution_plan.template_version;
   interview.orch_schema_version = 1;
+  if (!Array.isArray(interview.conversation_turns)) interview.conversation_turns = [];
+  interview.conversation_turns.push({ role: 'interviewer', content: opening, kind: 'opening' });
+  interview.markModified('conversation_turns');
   await interview.save();
 
   return {
@@ -207,6 +273,8 @@ export async function processInterviewTurn(interview, candidateMessage) {
   const sec = plan.sections?.[secIdx];
   const { probe, probeId } = matchPreloadedProbes(candidateMessage, probes, state, sec?.id || '');
 
+  applyUncertaintyStreakFromCandidateMessage(candidateMessage, state);
+
   let probeInjection = '';
   if (probe && probeId) {
     probeInjection = probe.probe || '';
@@ -219,23 +287,146 @@ export async function processInterviewTurn(interview, candidateMessage) {
     candidate_message: candidateMessage,
     last_interviewer_message: pendingQ,
     probe_injection: probeInjection,
+    interview,
   });
 
-  decision = applyHardTimeGates(state, plan, decision);
-
-  if ((state.turn_count || 0) >= MAX_TURNS) {
-    decision = { action: ACTIONS.CLOSE_INTERVIEW, reason: 'Max turns', hint_level: 0, forced: true };
+  const hintsSession = state.hints_given_session ?? 0;
+  const isSystemDesign = String(interview.interview_type || '').toLowerCase() === 'system_design';
+  if (decision.action === ACTIONS.GIVE_HINT && hintsSession >= 3) {
+    const prog = computeCandidateProgress(state, candidateMessage);
+    const stuckMicro =
+      isSystemDesign &&
+      ((state.consecutive_same_topic_turns ?? 0) >= 2 ||
+        (state.uncertain_response_streak ?? 0) >= 2 ||
+        prog === 'stuck' ||
+        prog === 'gave_up');
+    if (stuckMicro) {
+      decision = {
+        ...decision,
+        action: ACTIONS.WRAP_TOPIC,
+        reason: 'Session hint cap with stuck micro-topic — wrap instead of drilling',
+        hint_level: 0,
+        forced: true,
+      };
+    } else {
+      decision = {
+        ...decision,
+        action: ACTIONS.GO_DEEPER,
+        reason: 'Session hint cap reached — continue with a probing question instead.',
+        hint_level: 0,
+      };
+    }
   }
 
-  applyStructuralDecision(state, plan, decision);
+  decision = applyHardTimeGates(state, plan, decision);
+  decision = guardCloseUnderMinDuration(state, decision);
+
+  if ((state.turn_count || 0) >= MAX_TURNS) {
+    decision = {
+      action: ACTIONS.CLOSE_INTERVIEW,
+      reason: 'Max turns',
+      hint_level: 0,
+      forced: true,
+      probe_to_fire: '',
+      cross_question_seed: '',
+      notable_statement: '',
+      redirect_target: '',
+      update_signals: { strong: [], weak: [] },
+      evaluation_update: null,
+    };
+  }
+
+  decision = guardCloseUnderMinDuration(state, decision);
+
+  const skipDeterministicOverride =
+    decision.forced &&
+    decision.action === ACTIONS.CLOSE_INTERVIEW &&
+    (String(decision.reason || '').includes('Max turns') ||
+      String(decision.reason || '').includes('total duration'));
+
+  if (!skipDeterministicOverride) {
+    if (detectExplicitTopicExit(candidateMessage)) {
+      decision = {
+        ...decision,
+        action: ACTIONS.WRAP_TOPIC,
+        reason: 'explicit_candidate_exit_signal',
+        hint_level: 0,
+        forced: true,
+        probe_to_fire: '',
+        cross_question_seed: '',
+        redirect_target: '',
+        evaluation_update: isSystemDesign ? null : decision.evaluation_update,
+      };
+    } else if ((state.consecutive_same_topic_turns ?? 0) >= 3) {
+      decision = {
+        ...decision,
+        action: ACTIONS.WRAP_TOPIC,
+        reason: 'micro_topic_probe_turn_cap',
+        hint_level: 0,
+        forced: true,
+        probe_to_fire: '',
+        cross_question_seed: '',
+        redirect_target: '',
+        evaluation_update: isSystemDesign ? null : decision.evaluation_update,
+      };
+    } else if (
+      isSystemDesign &&
+      (state.uncertain_response_streak ?? 0) >= 2 &&
+      (decision.action === ACTIONS.GO_DEEPER || decision.action === ACTIONS.GIVE_HINT)
+    ) {
+      const extraWeak = 'Repeated uncertainty / guess on this thread — moving on';
+      decision = {
+        ...decision,
+        action: ACTIONS.WRAP_TOPIC,
+        reason: 'repeated_uncertainty_on_thread',
+        hint_level: 0,
+        forced: true,
+        probe_to_fire: '',
+        cross_question_seed: '',
+        redirect_target: '',
+        evaluation_update: null,
+        update_signals: {
+          strong: Array.isArray(decision.update_signals?.strong) ? decision.update_signals.strong : [],
+          weak: [
+            ...(Array.isArray(decision.update_signals?.weak) ? decision.update_signals.weak : []),
+            extraWeak,
+          ],
+        },
+      };
+    }
+  }
+
+  mergeDecisionMetadata(state, decision);
+
+  const candidateTurnIndex = (interview.conversation_turns || []).filter((t) => t.role === 'candidate').length;
+  if (String(interview.interview_type || '').toLowerCase() === 'system_design') {
+    mergeEvaluationUpdate(state, decision.evaluation_update, candidateMessage, candidateTurnIndex);
+  }
 
   if (state.interview_done || decision.action === ACTIONS.CLOSE_INTERVIEW) {
     state.interview_done = true;
+    updateProbeCountersAfterDecision(
+      state,
+      decision.action,
+      sec?.id || '',
+      pendingQ,
+      candidateMessage,
+      decision.redirect_target
+    );
+    recordSessionEndMetadata(interview, {
+      candidateTriggeredEnd: false,
+      source:
+        decision.action === ACTIONS.CLOSE_INTERVIEW && String(decision.reason || '').includes('Max turns')
+          ? 'max_turns'
+          : 'orchestrator_close',
+    });
     const closing =
       'Thank you — that completes our scheduled time for today. We appreciate your thoughtful answers.';
     interview.conversation_turns.push({ role: 'interviewer', content: closing });
     state.pending_question_text = '';
     state.turn_count = (state.turn_count || 0) + 1;
+    interview.markModified('conversation_turns');
+    interview.markModified('questions');
     await interview.save();
     return {
       done: true,
@@ -245,7 +436,7 @@ export async function processInterviewTurn(interview, candidateMessage) {
     };
   }
 
-  const tail = conversationTailFromInterview(interview);
+  const tail = conversationTailFromInterview(interview, 6);
   const interviewer_message = await runInterviewerTurn({
     interview,
     execution_plan: plan,
@@ -255,6 +446,16 @@ export async function processInterviewTurn(interview, candidateMessage) {
     probe_injection: probeInjection,
   });
 
+  applyStructuralDecision(state, plan, decision);
+  updateProbeCountersAfterDecision(
+    state,
+    decision.action,
+    sec?.id || '',
+    pendingQ,
+    candidateMessage,
+    decision.redirect_target
+  );
+
   state.pending_question_text = interviewer_message;
   state.turn_count = (state.turn_count || 0) + 1;
   interview.conversation_turns.push({
@@ -263,6 +464,8 @@ export async function processInterviewTurn(interview, candidateMessage) {
     kind: decision.action,
   });
 
+  interview.markModified('conversation_turns');
+  interview.markModified('questions');
   await interview.save();
 
   return {

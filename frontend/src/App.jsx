@@ -4,6 +4,7 @@ import { queryClientInstance } from '@/lib/query-client';
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import PageNotFound from '@/lib/PageNotFound';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
+import { MarketProvider } from '@/lib/MarketContext';
 import RequireAuth from '@/components/RequireAuth';
 import Layout from '@/components/Layout';
 import Landing from '@/pages/Landing';
@@ -49,10 +50,12 @@ function App() {
   return (
     <AuthProvider>
       <QueryClientProvider client={queryClientInstance}>
-        <Router>
-          <AppRoutes />
-        </Router>
-        <Toaster />
+        <MarketProvider>
+          <Router>
+            <AppRoutes />
+          </Router>
+          <Toaster />
+        </MarketProvider>
       </QueryClientProvider>
     </AuthProvider>
   );

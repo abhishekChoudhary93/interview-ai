@@ -1,6 +1,7 @@
 import HeroSection from "../components/landing/HeroSection";
 import HowItWorks from "../components/landing/HowItWorks";
 import Features from "../components/landing/Features";
+import PricingSection from "../components/landing/PricingSection";
 import CTASection from "../components/landing/CTASection";
 import AnimatedDemo from "../components/landing/AnimatedDemo";
 import { Link } from 'react-router-dom';
@@ -24,6 +25,7 @@ export default function Landing() {
             </Link>
             <nav className="flex items-center gap-6">
               <a href="#how-it-works" className="text-sm text-primary-foreground/60 hover:text-primary-foreground transition-colors">How It Works</a>
+              <a href="#pricing" className="text-sm text-primary-foreground/60 hover:text-primary-foreground transition-colors">Pricing</a>
               {authChecked && isAuthenticated ? (
                 <>
                   <Link to="/dashboard" className="text-sm text-primary-foreground/60 hover:text-primary-foreground transition-colors">
@@ -59,6 +61,7 @@ export default function Landing() {
       <HowItWorks />
       <AnimatedDemo />
       <Features />
+      <PricingSection />
       <CTASection />
 
       {/* Footer */}

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Search, ArrowRight, Trash2 } from "lucide-react";
+import { Search, ArrowRight, Trash2, PlayCircle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { listInterviews, deleteInterview } from '@/api/interviews';
 import { useAuth } from '@/lib/AuthContext';
@@ -11,6 +11,7 @@ import { formatInterviewType } from "@/utils/interviewLabels";
 export default function History() {
   const navigate = useNavigate();
   const [interviews, setInterviews] = useState([]);
+  const [continuable, setContinuable] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const { isAuthenticated } = useAuth();
@@ -19,17 +20,36 @@ export default function History() {
     if (!isAuthenticated) {
       setLoading(false);
       setInterviews([]);
+      setContinuable([]);
       return undefined;
     }
     let cancelled = false;
     setLoading(true);
-    listInterviews({ status: 'completed', sort: '-created_date', limit: 50 })
-      .then((rows) => {
-        if (!cancelled) setInterviews(Array.isArray(rows) ? rows : []);
+    Promise.all([
+      listInterviews({ status: 'completed', sort: '-created_date', limit: 50 }),
+      listInterviews({ status: 'paused', sort: '-created_date', limit: 15 }),
+      listInterviews({ status: 'in_progress', sort: '-created_date', limit: 15 }),
+    ])
+      .then(([done, paused, active]) => {
+        if (cancelled) return;
+        setInterviews(Array.isArray(done) ? done : []);
+        const p = Array.isArray(paused) ? paused : [];
+        const a = Array.isArray(active) ? active : [];
+        const seen = new Set();
+        const merged = [...p, ...a].filter((x) => {
+          if (!x?.id || seen.has(x.id)) return false;
+          seen.add(x.id);
+          return true;
+        });
+        merged.sort((x, y) => new Date(y.created_date || 0) - new Date(x.created_date || 0));
+        setContinuable(merged);
       })
       .catch((e) => {
         console.error('[history] listInterviews failed', e);
-        if (!cancelled) setInterviews([]);
+        if (!cancelled) {
+          setInterviews([]);
+          setContinuable([]);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -44,11 +64,17 @@ export default function History() {
     i.company?.toLowerCase().includes(search.toLowerCase())
   );
 
+  const filteredContinuable = continuable.filter(i =>
+    i.role_title?.toLowerCase().includes(search.toLowerCase()) ||
+    i.company?.toLowerCase().includes(search.toLowerCase())
+  );
+
   const handleDelete = async (e, id) => {
     e.stopPropagation();
     if (confirm("Delete this interview?")) {
       await deleteInterview(id);
       setInterviews(prev => prev.filter(i => i.id !== id));
+      setContinuable(prev => prev.filter(i => i.id !== id));
     }
   };
 
@@ -74,10 +100,48 @@ export default function History() {
         />
       </div>
 
-      {filtered.length === 0 ? (
+      {filteredContinuable.length > 0 && (
+        <div className="mb-10">
+          <h2 className="font-space text-lg font-semibold mb-3">Continue practice</h2>
+          <div className="space-y-2">
+            {filteredContinuable.map((interview, i) => (
+              <motion.div
+                key={interview.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.03 }}
+              >
+                <button
+                  type="button"
+                  onClick={() => navigate(`/interview?id=${interview.id}`)}
+                  className="w-full bg-card rounded-2xl border border-accent/25 p-5 flex items-center gap-5 hover:border-accent/40 transition-all text-left"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-accent/15 flex items-center justify-center text-accent flex-shrink-0">
+                    <PlayCircle className="w-5 h-5" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold">{interview.role_title}</p>
+                    <p className="text-sm text-muted-foreground">{interview.company}</p>
+                    <p className="text-xs text-muted-foreground mt-1 capitalize">
+                      {interview.status === "paused" ? "Paused" : "In progress"} · {formatInterviewType(interview.interview_type)}
+                    </p>
+                  </div>
+                  <ArrowRight className="w-5 h-5 text-accent flex-shrink-0" />
+                </button>
+              </motion.div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <h2 className="font-space text-lg font-semibold mb-4">Completed interviews</h2>
+
+      {filtered.length === 0 && filteredContinuable.length === 0 ? (
         <div className="text-center py-16">
           <p className="text-muted-foreground">No interviews found.</p>
         </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-8 text-muted-foreground text-sm">No completed interviews match your search.</div>
       ) : (
         <div className="space-y-3">
           {filtered.map((interview, i) => (

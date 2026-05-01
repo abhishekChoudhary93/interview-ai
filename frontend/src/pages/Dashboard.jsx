@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Mic, ArrowRight, Clock, TrendingUp, BarChart3, Plus } from "lucide-react";
+import { Mic, ArrowRight, Clock, TrendingUp, BarChart3, Plus, PlayCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { listInterviews } from '@/api/interviews';
 import { useAuth } from '@/lib/AuthContext';
@@ -10,6 +10,7 @@ import { formatInterviewType } from "@/utils/interviewLabels";
 
 export default function Dashboard() {
   const [interviews, setInterviews] = useState([]);
+  const [continuable, setContinuable] = useState([]);
   const [loading, setLoading] = useState(true);
   const { user, isAuthenticated } = useAuth();
   const navigate = useNavigate();
@@ -18,17 +19,36 @@ export default function Dashboard() {
     if (!isAuthenticated) {
       setLoading(false);
       setInterviews([]);
+      setContinuable([]);
       return undefined;
     }
     let cancelled = false;
     setLoading(true);
-    listInterviews({ status: 'completed', sort: '-created_date', limit: 20 })
-      .then((rows) => {
-        if (!cancelled) setInterviews(Array.isArray(rows) ? rows : []);
+    Promise.all([
+      listInterviews({ status: 'completed', sort: '-created_date', limit: 20 }),
+      listInterviews({ status: 'paused', sort: '-created_date', limit: 10 }),
+      listInterviews({ status: 'in_progress', sort: '-created_date', limit: 12 }),
+    ])
+      .then(([done, paused, active]) => {
+        if (cancelled) return;
+        setInterviews(Array.isArray(done) ? done : []);
+        const p = Array.isArray(paused) ? paused : [];
+        const a = Array.isArray(active) ? active : [];
+        const seen = new Set();
+        const merged = [...p, ...a].filter((x) => {
+          if (!x?.id || seen.has(x.id)) return false;
+          seen.add(x.id);
+          return true;
+        });
+        merged.sort((x, y) => new Date(y.created_date || 0) - new Date(x.created_date || 0));
+        setContinuable(merged);
       })
       .catch((e) => {
         console.error('[dashboard] listInterviews failed', e);
-        if (!cancelled) setInterviews([]);
+        if (!cancelled) {
+          setInterviews([]);
+          setContinuable([]);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -68,6 +88,37 @@ export default function Dashboard() {
           </Button>
         </Link>
       </div>
+
+      {continuable.length > 0 && (
+        <div className="mb-10">
+          <h2 className="font-space text-lg font-semibold mb-3">Continue practice</h2>
+          <p className="text-sm text-muted-foreground mb-4">
+            Paused or in-progress sessions — pick up where you left off.
+          </p>
+          <div className="space-y-2">
+            {continuable.map((iv) => (
+              <button
+                key={iv.id}
+                type="button"
+                onClick={() => navigate(`/interview?id=${iv.id}`)}
+                className="w-full flex items-center gap-4 rounded-2xl border border-accent/25 bg-accent/5 px-4 py-4 text-left hover:border-accent/40 transition-colors"
+              >
+                <div className="w-10 h-10 rounded-xl bg-accent/15 flex items-center justify-center text-accent flex-shrink-0">
+                  <PlayCircle className="w-5 h-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold truncate">{iv.role_title}</p>
+                  <p className="text-sm text-muted-foreground truncate">{iv.company}</p>
+                  <p className="text-xs text-muted-foreground mt-1 capitalize">
+                    {iv.status === "paused" ? "Paused" : "In progress"} · {formatInterviewType(iv.interview_type)}
+                  </p>
+                </div>
+                <span className="text-sm font-medium text-accent flex-shrink-0">Resume</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-10">

@@ -7,13 +7,16 @@ import authRoutes from './routes/auth.js';
 import interviewRoutes from './routes/interviews.js';
 import llmRoutes from './routes/llm.js';
 import { runSeed } from './seed/runSeed.js';
+import publicRoutes from './routes/public.js';
 import { cookieParseMiddleware } from './middleware/cookieParse.js';
 
 const app = express();
+app.set('trust proxy', config.trustProxy);
 app.use(
   cors({
     origin: config.frontendOrigins,
     credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Preferred-Market'],
   })
 );
 app.use(cookieParseMiddleware);
@@ -21,6 +24,7 @@ app.use(express.json({ limit: '2mb' }));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
+app.use('/api/public', publicRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/interviews', interviewRoutes);
 app.use('/api/llm', llmRoutes);

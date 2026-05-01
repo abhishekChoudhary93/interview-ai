@@ -1,11 +1,17 @@
 import { useEffect, useRef } from "react";
 import { Bot, User } from "lucide-react";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 
 /**
  * Ongoing transcript for chat, audio, and video sessions.
+ * Uses native overflow scrolling so flex layouts get a real scroll height (Radix ScrollArea often does not).
  */
-export default function InterviewTranscript({ messages, className = "" }) {
+export default function InterviewTranscript({
+  messages,
+  className = "",
+  title = "Conversation",
+  subtitle = "Live transcript",
+}) {
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -14,15 +20,19 @@ export default function InterviewTranscript({ messages, className = "" }) {
 
   return (
     <div
-      className={`flex flex-col h-full min-h-0 rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden ${className}`}
+      className={cn(
+        "flex flex-col min-h-0 overflow-hidden rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm",
+        messages.length > 0 && "min-h-[160px]",
+        "max-h-[min(400px,52dvh)]",
+        className
+      )}
     >
-    >
-      <div className="px-4 py-3 border-b border-border/50 bg-muted/30">
-        <p className="text-xs font-semibold text-foreground">Conversation</p>
-        <p className="text-[11px] text-muted-foreground mt-0.5">Live transcript</p>
+      <div className="px-4 py-3 border-b border-border/50 bg-muted/30 flex-shrink-0">
+        <p className="text-xs font-semibold text-foreground">{title}</p>
+        <p className="text-[11px] text-muted-foreground mt-0.5">{subtitle}</p>
       </div>
-      <ScrollArea className="flex-1 min-h-0 p-3">
-        <div className="space-y-3 pr-2">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 scroll-smooth [scrollbar-gutter:stable]">
+        <div className="space-y-3 pr-1">
           {messages.length === 0 ? (
             <p className="text-xs text-muted-foreground text-center py-8">Messages appear here as you go.</p>
           ) : (
@@ -61,7 +71,7 @@ export default function InterviewTranscript({ messages, className = "" }) {
           )}
           <div ref={bottomRef} />
         </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }

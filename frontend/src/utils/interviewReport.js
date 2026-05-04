@@ -1,9 +1,14 @@
 /**
  * Orchestrated template sessions are one design exercise with many scored turns;
  * the report should treat them as a single "question" for counts and charts.
+ *
+ * v3 rows write `interview_config`; legacy rows still carry `execution_plan`.
+ * Either presence indicates an orchestrated session.
  */
 export function isOrchestratedSession(interview) {
-  return Boolean(interview?.template_id && interview?.execution_plan);
+  return Boolean(
+    interview?.template_id && (interview?.interview_config || interview?.execution_plan)
+  );
 }
 
 /** Display count: always 1 for orchestrated; else number of legacy question rows. */
@@ -92,10 +97,11 @@ export function aggregateOrchestratedQuestionsForCharts(interview) {
     if (!vals.length) return 0;
     return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
   };
-  const pq = interview.execution_plan?.primary_question;
+  const problem =
+    interview.interview_config?.problem || interview.execution_plan?.primary_question;
   const title =
-    pq && typeof pq === 'object' && pq.title
-      ? `Design exercise: ${pq.title}`
+    problem && typeof problem === 'object' && problem.title
+      ? `Design exercise: ${problem.title}`
       : 'System design session';
   const row = {
     question: title,

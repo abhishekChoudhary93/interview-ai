@@ -1,8 +1,45 @@
 import { InterviewSignalSnapshot } from '../models/InterviewSignalSnapshot.js';
 import { invokeLLM } from './llmInvoke.js';
-import { deriveCandidateLevel } from './interviewLevel.js';
 import { recordSessionEndMetadata } from './interviewDebriefContext.js';
-import { aggregateLiveEvaluationForReport } from './liveEvaluationMerge.js';
+
+/**
+ * v3 debrief generator.
+ *
+ * The Planner has already done the per-turn judgment work — green/red flags
+ * tagged with section_id and signal_id, momentum and bar trajectory, time
+ * accounting per section. The debrief LLM's job is purely synthesis: read
+ * those flags, the per-section leveling descriptions, and the transcript,
+ * and write a structured report.
+ *
+ * No coverage gates beyond the (well-tested) `applyDebriefVerdictGuards`.
+ */
+
+/* --------------------------- Live state ------------------------------ */
+
+function liveStateOf(interview) {
+  if (interview?.session_state && Object.keys(interview.session_state).length > 0) {
+    return interview.session_state;
+  }
+  return interview?.orchestrator_state || {};
+}
+
+function getInterviewConfig(interview) {
+  return interview?.interview_config || interview?.execution_plan || {};
+}
+
+/**
+ * Compact level label used in debrief prompts.
+ */
+function deriveCandidateLevel(interview) {
+  const track = String(interview?.role_track || 'ic').toLowerCase();
+  const level = String(interview?.experience_level || '').toLowerCase();
+  const yoe = String(interview?.years_experience_band || '').toLowerCase();
+  if (track === 'sdm') return 'SDM';
+  if (level === 'lead' || level === 'staff' || yoe === '8_12' || yoe === '12_plus') return 'IC_STAFF';
+  return 'IC_MID';
+}
+
+/* --------------------------- Schemas (UI contract) ------------------- */
 
 const EXTRACTION_SCHEMA = {
   type: 'object',
@@ -18,46 +55,6 @@ const EXTRACTION_SCHEMA = {
     },
     notable_quotes: { type: 'array', items: { type: 'string' } },
     recommendation: { type: 'string' },
-  },
-};
-
-const SUMMARY_SCHEMA = {
-  type: 'object',
-  properties: {
-    summary_feedback: { type: 'string' },
-    strengths: { type: 'array', items: { type: 'string' } },
-    improvements: { type: 'array', items: { type: 'string' } },
-  },
-};
-
-const DEBRIEF_POINT = {
-  type: 'object',
-  properties: {
-    point: { type: 'string' },
-    evidence: { type: 'string' },
-  },
-};
-
-const DEBRIEF_SECTION_ENTRY = {
-  type: 'object',
-  properties: {
-    score: { type: 'number' },
-    status: { type: 'string' },
-    comment: { type: 'string' },
-  },
-};
-
-const DEBRIEF_SCHEMA = {
-  type: 'object',
-  properties: {
-    verdict: { type: 'string' },
-    verdict_reason: { type: 'string' },
-    completion_note: { type: 'string' },
-    section_scores: { type: 'object', additionalProperties: DEBRIEF_SECTION_ENTRY },
-    strengths: { type: 'array', items: DEBRIEF_POINT },
-    improvements: { type: 'array', items: DEBRIEF_POINT },
-    faang_bar_assessment: { type: 'string' },
-    next_session_focus: { type: 'array', items: { type: 'string' } },
   },
 };
 
@@ -119,6 +116,8 @@ const VALID_VERDICTS = new Set([
   'Incomplete — Cannot Assess',
 ]);
 
+/* --------------------------- Helpers --------------------------------- */
+
 function transcriptCompactIc(interview) {
   const turns = interview.conversation_turns || [];
   if (turns.length) {
@@ -131,7 +130,7 @@ function transcriptCompactIc(interview) {
 
 /**
  * Parse numeric score from debrief overall_score string like "3.25/4.0".
- * @param {unknown} debriefOrString debrief object or raw string
+ * @param {unknown} debriefOrString
  */
 export function parseOverallScoreFraction(debriefOrString) {
   const s =
@@ -146,63 +145,166 @@ export function parseOverallScoreFraction(debriefOrString) {
   return Number.isFinite(n) ? n : null;
 }
 
-/**
- * Verbatim-structure report prompt for system design rubric debrief.
- */
-export function buildSystemDesignReportPrompt(interview, ctx) {
-  const {
-    totalMinutes,
-    expectedMinutes,
-    completionPct,
-    sectionsAttempted,
-    totalSections,
-    overallScore,
-    sectionSummaries,
-    transcript,
-    sparseLiveScores,
-  } = ctx;
-  const plan = interview.execution_plan || {};
-  const pq = plan.primary_question;
-  const questionTitle = pq && typeof pq === 'object' ? pq.title : 'System design';
-  const level = deriveCandidateLevel(interview);
-  const safeQ = String(questionTitle).replace(/"/g, '\\"');
-  const sparseBlock = sparseLiveScores
-    ? `NOTE: Live rubric scores were sparse — use FULL TRANSCRIPT for narrative fields where scores are missing.\n\n`
-    : '';
-  const overallDisplay = overallScore != null ? overallScore : 'null';
-  const overallScoreExample =
-    overallScore != null ? `${overallScore}/4.0` : '—/4.0';
+function formatLevelingForSection(section) {
+  const lev = section?.leveling || {};
+  const parts = [];
+  if (lev.one_down?.description) {
+    parts.push(`one_down (${lev.one_down.label || 'one_down'}): ${lev.one_down.description}`);
+  }
+  if (lev.target?.description) {
+    parts.push(`target ★ (${lev.target.label || 'target'}): ${lev.target.description}`);
+  }
+  if (lev.one_up?.description) {
+    parts.push(`one_up (${lev.one_up.label || 'one_up'}): ${lev.one_up.description}`);
+  }
+  return parts.join('\n      ');
+}
 
-  return `${sparseBlock}Generate an interview debrief report. Return JSON only.
+function buildPerSectionEvidenceBlock(config, sessionState) {
+  const sections = Array.isArray(config?.sections) ? config.sections : [];
+  const flagsBySection = sessionState?.flags_by_section || {};
+  const performanceBySection = sessionState?.performance_by_section || {};
+  const sectionMinutesUsed = sessionState?.section_minutes_used || {};
+  const probeQueue = sessionState?.probe_queue || {};
+  const evalHistory = Array.isArray(sessionState?.eval_history) ? sessionState.eval_history : [];
+
+  const everTouched = new Set();
+  for (const e of evalHistory) {
+    if (e?.recommended_section_focus_id) everTouched.add(e.recommended_section_focus_id);
+  }
+
+  const lines = [];
+  for (const sec of sections) {
+    const id = sec.id;
+    const flags = Array.isArray(flagsBySection[id]) ? flagsBySection[id] : [];
+    const greens = flags.filter((f) => f.type === 'green');
+    const reds = flags.filter((f) => f.type === 'red');
+    const minutesUsed = Number(sectionMinutesUsed[id] || 0).toFixed(1);
+    const budget = Number(sec.budget_minutes) || 0;
+    const perf = performanceBySection[id] || 'unclear';
+    const queue = Array.isArray(probeQueue[id]) ? probeQueue[id] : [];
+    const openProbes = queue.filter((p) => !p.consumed);
+
+    let status = 'not_reached';
+    if (flags.length > 0 || perf !== 'unclear') status = 'completed';
+    else if (everTouched.has(id) || Number(minutesUsed) > 0.5) status = 'partial';
+
+    lines.push(`SECTION ${id} — "${sec.label || id}"  [${status}]`);
+    lines.push(`  budget: ${budget}m   used: ${minutesUsed}m   live performance: ${perf}`);
+    if (sec.faang_bar) lines.push(`  FAANG bar: ${sec.faang_bar}`);
+    const lev = formatLevelingForSection(sec);
+    if (lev) lines.push(`  Leveling:\n      ${lev}`);
+    lines.push(`  GREEN flags (${greens.length}):`);
+    for (const f of greens) lines.push(`    - [${f.signal_id}] ${f.note}`);
+    lines.push(`  RED flags (${reds.length}):`);
+    for (const f of reds) lines.push(`    - [${f.signal_id}] ${f.note}`);
+    if (openProbes.length > 0) {
+      lines.push(`  UNCONSUMED probes (${openProbes.length}) — areas the Planner queued but never reached:`);
+      for (const p of openProbes.slice(0, 3)) {
+        lines.push(`    - ${String(p.observation || p.probe || '').slice(0, 120)}`);
+      }
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function buildMomentumTrajectoryBlock(sessionState) {
+  const evalHistory = Array.isArray(sessionState?.eval_history) ? sessionState.eval_history : [];
+  if (evalHistory.length === 0) return '(no eval history captured)';
+  const compact = evalHistory.map((e) => {
+    const t = e?.turn_index ?? '?';
+    const sec = e?.recommended_section_focus_id || '?';
+    const perf = e?.performance_assessment || 'unclear';
+    const mov = e?.move || '?';
+    const dif = e?.difficulty || 'L?';
+    const mom = e?.momentum || '?';
+    return `  t${t} [${sec}] ${perf} (${mom}/${dif}) → ${mov}`;
+  });
+  return compact.slice(-30).join('\n');
+}
+
+/* --------------------------- v3 debrief prompt ----------------------- */
+
+export function buildV3DebriefPrompt(config, sessionState, interview) {
+  const sections = Array.isArray(config?.sections) ? config.sections : [];
+  const totalSections = sections.length || 1;
+
+  const startedAt =
+    sessionState?.session_wall_start_ms ??
+    (interview.session_started_at ? new Date(interview.session_started_at).getTime() : Date.now());
+  const endedAt =
+    sessionState?.session_ended_at_ms != null && Number.isFinite(sessionState.session_ended_at_ms)
+      ? sessionState.session_ended_at_ms
+      : Date.now();
+  const totalMinutes = ((endedAt - startedAt) / 60000).toFixed(1);
+  const expectedMinutes = config?.total_minutes ?? 60;
+  const completionPct = Math.round((parseFloat(totalMinutes) / Math.max(1, expectedMinutes)) * 100);
+
+  const flagsBySection = sessionState?.flags_by_section || {};
+  const performanceBySection = sessionState?.performance_by_section || {};
+  const evalHistory = Array.isArray(sessionState?.eval_history) ? sessionState.eval_history : [];
+  const everTouched = new Set();
+  for (const e of evalHistory) {
+    if (e?.recommended_section_focus_id) everTouched.add(e.recommended_section_focus_id);
+  }
+  const sectionsWithEvidence = sections.filter((s) => {
+    const f = Array.isArray(flagsBySection[s.id]) ? flagsBySection[s.id] : [];
+    return f.length > 0 || !!performanceBySection[s.id];
+  }).length;
+  const sectionsTouched = sections.filter((s) => everTouched.has(s.id)).length;
+  const sectionsAttempted = Math.max(sectionsWithEvidence, sectionsTouched);
+
+  const transcript = transcriptCompactIc(interview);
+  const candidateLevel = deriveCandidateLevel(interview);
+  const targetLevel = config?.target_level || 'SR_SDE';
+  const problemTitle = config?.problem?.title || 'System design';
+  const problemBrief = String(config?.problem?.brief || '').replace(/"/g, '\\"').slice(0, 600);
+
+  const evidenceBlock = buildPerSectionEvidenceBlock(config, sessionState);
+  const momentumBlock = buildMomentumTrajectoryBlock(sessionState);
+
+  return `Generate an interview debrief report. Return JSON only.
 
 METADATA:
-level=${level}
-question="${safeQ}"
-duration=${totalMinutes}min (expected ${expectedMinutes}min)
+candidate_level=${candidateLevel}
+target_level=${targetLevel}
+problem="${String(problemTitle).replace(/"/g, '\\"')}"
+${problemBrief ? `problem_brief="${problemBrief}"` : ''}
+duration=${totalMinutes}min (planned ${expectedMinutes}min)
 completion=${completionPct}%
-sections_attempted=${sectionsAttempted}/${totalSections}
-computed_weighted_score=${overallDisplay} (out of 4.0)
+sections_with_evidence=${sectionsAttempted}/${totalSections}
 
-RUBRIC SCORES CAPTURED DURING INTERVIEW:
-${JSON.stringify(sectionSummaries, null, 2)}
+PER-SECTION EVIDENCE — flags emitted by the live Planner during the interview, plus the bar definitions for context:
+
+${evidenceBlock}
+
+LIVE TRAJECTORY — what the Planner observed turn-by-turn (use only for narrative; do not double-count flags):
+${momentumBlock}
 
 FULL TRANSCRIPT:
 ${transcript}
 
+INSTRUCTIONS:
+1. For each section: weighted_score reflects the green/red flag balance against the target_level bar. 4.0 = at_target+ across all signals. 3.0 = at_target with one weak signal. 2.0 = below_target. 1.0 = no signal captured. Include status: completed | partial | not_reached.
+2. For each section's signals[] in section_scores: pull the signal_id from the flags above; quote the note as evidence; map the score using target_level: green flag = 3-4, red flag = 1-2, no flag = null.
+3. top_moments[]: 2-4 strongest moments and 1-3 clearest gaps from the flags + transcript. Each must reference a specific moment, not generic praise.
+4. faang_bar_assessment: 3-4 sentences on whether the candidate cleared the target_level bar. Reference both moments and gaps.
+5. next_session_focus: per-area items derived from red flags and unconsumed probes.
+
 VERDICT RULES (non-negotiable):
-- completion < 40% → verdict = "Incomplete — Cannot Assess"
-- completion 40-60% → verdict capped at "No Hire" regardless of scores  
-- score >= 3.5 AND completion >= 80% → eligible for "Strong Hire"
-- score 2.8-3.4 AND completion >= 80% → "Hire"
-- score 2.0-2.7 → "No Hire"
-- score < 2.0 → "Strong No Hire"
-- duration < 15min → verdict = "Incomplete — Cannot Assess" always
+- completion < 40% OR duration < 15min  → verdict = "Incomplete — Cannot Assess"
+- completion 40-60% AND not all sections at score 4 → verdict capped at "No Hire"
+- weighted overall < 2.0 → "Strong No Hire"
+- weighted overall 2.0-2.7 → "No Hire"
+- weighted overall 2.8-3.4 AND completion >= 80% → "Hire"
+- weighted overall >= 3.5 AND completion >= 80% → eligible for "Strong Hire"
 
 Return:
 {
   "verdict": "...",
-  "verdict_reason": "2 sentences. Reference score, completion, and 1 specific moment.",
-  "overall_score": "${overallScoreExample}",
+  "verdict_reason": "2 sentences. Reference both score and one specific moment.",
+  "overall_score": "x.x/4.0",
   "completion_note": "${sectionsAttempted} of ${totalSections} sections in ${totalMinutes} min.",
   "section_scores": {
     "[section_id]": {
@@ -210,10 +312,10 @@ Return:
       "status": "completed|partial|not_reached",
       "signals": [
         {
-          "signal": "...",
+          "signal": "human-readable signal name",
           "score": 1-4 or null,
-          "evidence": "exact quote or moment — never generic",
-          "what_it_means": "one line from rubric score description"
+          "evidence": "quote the flag note or a transcript moment",
+          "what_it_means": "one line of bar context from the leveling block"
         }
       ]
     }
@@ -221,15 +323,18 @@ Return:
   "top_moments": [
     { "type": "strength|gap", "moment": "what they said or did", "why_it_matters": "..." }
   ],
-  "faang_bar_assessment": "3-4 sentences. Specific. Reference actual moments.",
+  "faang_bar_assessment": "3-4 sentences on bar fit. Reference actual moments.",
   "next_session_focus": [
-    { "area": "...", "reason": "why — reference transcript evidence" }
+    { "area": "...", "reason": "why — reference transcript or red flag" }
   ]
 }`;
 }
 
+/* --------------------------- Output normalization ------------------- */
+
 /**
- * Normalize LLM output for system design rubric debrief.
+ * Normalize the LLM debrief output. Handles missing/malformed fields,
+ * forces `not_reached` sections to a stable empty shape.
  */
 export function normalizeSdStructuredDebrief(raw, sectionIds = [], coverageMap = []) {
   if (!raw || typeof raw !== 'object') return null;
@@ -358,293 +463,44 @@ export function normalizeSdStructuredDebrief(raw, sectionIds = [], coverageMap =
   };
 }
 
-function liveEvaluationHasScores(le) {
-  if (!le || typeof le !== 'object') return false;
-  for (const sec of Object.values(le)) {
-    if (!sec || typeof sec !== 'object') continue;
-    for (const ev of Object.values(sec)) {
-      if (
-        ev &&
-        typeof ev === 'object' &&
-        ev.score != null &&
-        Number(ev.score) >= 1 &&
-        Number(ev.score) <= 4
-      ) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-async function generateSystemDesignStructuredDebrief(interview) {
-  const plan = interview.execution_plan || {};
-  const pq = plan.primary_question;
-  const sections = plan.sections || [];
-  const sectionIds = sections.map((s) => s.id).filter(Boolean);
-  const os = interview.orchestrator_state || {};
-
-  const startedAt =
-    os.session_wall_start_ms ??
-    (interview.session_started_at ? new Date(interview.session_started_at).getTime() : Date.now());
-  const endedAt =
-    os.session_ended_at_ms != null && Number.isFinite(os.session_ended_at_ms)
-      ? os.session_ended_at_ms
-      : Date.now();
-  const totalMinutes = ((endedAt - startedAt) / 60000).toFixed(1);
-  const expectedMinutes = plan.total_minutes ?? 60;
-  const curIdx = os.current_section_index ?? 0;
-  const sectionsAttempted = curIdx + 1;
-  const totalSections = sections.length || 1;
-  const completionPct = Math.round((sectionsAttempted / totalSections) * 100);
-
-  const sectionCoverageMap = sections.map((s, i) => ({
-    id: s.id,
-    name: s.name,
-    status: i < curIdx ? 'completed' : i === curIdx ? 'partial' : 'not_reached',
-  }));
-
-  const liveEval = os.live_evaluation || {};
-  const sparseLiveScores = !liveEvaluationHasScores(liveEval);
-
-  const { sectionSummaries, overallScore } = aggregateLiveEvaluationForReport(liveEval);
-  const transcript = transcriptCompactIc(interview);
-
-  const prompt = buildSystemDesignReportPrompt(interview, {
-    totalMinutes,
-    expectedMinutes,
-    completionPct,
-    sectionsAttempted,
-    totalSections,
-    overallScore,
-    sectionSummaries,
-    transcript,
-    sparseLiveScores,
-  });
-
-  const raw = await invokeLLM({
-    prompt,
-    response_json_schema: SD_DEBRIEF_SCHEMA,
-    modelTier: 'extraction',
-  });
-  const normalized = normalizeSdStructuredDebrief(raw, sectionIds, sectionCoverageMap);
-  return applyDebriefVerdictGuards(normalized, interview, sectionCoverageMap);
-}
+/* --------------------------- Verdict guards --------------------------- */
 
 /**
- * @param {Record<string, unknown>} raw
- * @param {string[]} sectionIds
- * @param {Array<{ id?: string, name?: string, status?: string }>} coverageMap
- */
-export function normalizeStructuredDebrief(raw, sectionIds = [], coverageMap = []) {
-  if (!raw || typeof raw !== 'object') return null;
-  let verdict = String(raw.verdict || '').trim() || 'Hire';
-  if (!VALID_VERDICTS.has(verdict)) verdict = 'Hire';
-  const verdict_reason =
-    typeof raw.verdict_reason === 'string' && raw.verdict_reason.trim()
-      ? raw.verdict_reason.trim()
-      : typeof raw.verdict_summary === 'string' && raw.verdict_summary.trim()
-        ? raw.verdict_summary.trim()
-        : '';
-
-  const completion_note =
-    typeof raw.completion_note === 'string' && raw.completion_note.trim()
-      ? raw.completion_note.trim()
-      : '';
-
-  const statusById = {};
-  for (const row of coverageMap) {
-    if (row && row.id) statusById[String(row.id)] = String(row.status || '').trim() || 'partial';
-  }
-
-  const rawSs = raw.section_scores && typeof raw.section_scores === 'object' ? raw.section_scores : {};
-  const ids =
-    Array.isArray(sectionIds) && sectionIds.length
-      ? sectionIds
-      : [...new Set([...Object.keys(rawSs), ...Object.keys(statusById)])].filter(Boolean);
-
-  const section_scores = {};
-  for (const id of ids) {
-    const forced = statusById[id];
-    const v = rawSs[id];
-    if (forced === 'not_reached') {
-      section_scores[id] = { score: null, status: 'not_reached', comment: 'Section not covered.' };
-      continue;
-    }
-    if (v != null && typeof v === 'object' && !Array.isArray(v)) {
-      const stRaw = String(v.status || forced || 'completed').trim() || 'completed';
-      const st = ['completed', 'partial', 'not_reached'].includes(stRaw) ? stRaw : forced || 'partial';
-      if (st === 'not_reached') {
-        section_scores[id] = {
-          score: null,
-          status: 'not_reached',
-          comment: String(v.comment || '').trim() || 'Section not covered.',
-        };
-        continue;
-      }
-      const rawSc = v.score;
-      if (rawSc === null || rawSc === undefined || rawSc === 'null') {
-        section_scores[id] = {
-          score: null,
-          status: st,
-          comment: String(v.comment || '').trim(),
-        };
-        continue;
-      }
-      const sc = Math.round(Number(rawSc));
-      const score = Number.isFinite(sc) ? Math.min(4, Math.max(1, sc)) : null;
-      section_scores[id] = {
-        score,
-        status: st,
-        comment: String(v.comment || '').trim(),
-      };
-    } else if (v != null && (typeof v === 'number' || typeof v === 'string')) {
-      const sc = Math.round(Number(v));
-      if (Number.isFinite(sc)) {
-        section_scores[id] = {
-          score: Math.min(4, Math.max(1, sc)),
-          status: forced || 'completed',
-          comment: '',
-        };
-      }
-    }
-  }
-
-  function mapEvidence(arr, legacy) {
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .map((item) => {
-        if (!item || typeof item !== 'object') return null;
-        if (item.point != null || item.evidence != null) {
-          return { point: String(item.point || '').trim() || '—', evidence: String(item.evidence || '').trim() || '—' };
-        }
-        if (legacy && (item.title != null || item.quote != null)) {
-          return {
-            point: String(item.title || 'Strength').trim(),
-            evidence: String(item.quote || item.detail || '').trim() || '—',
-          };
-        }
-        return null;
-      })
-      .filter(Boolean);
-  }
-
-  let strengths = mapEvidence(raw.strengths, false);
-  let improvements = mapEvidence(raw.improvements, false);
-  if (!strengths.length) strengths = mapEvidence(raw.strengths_evidence, true);
-  if (!improvements.length) improvements = mapEvidence(raw.improvements_evidence, true);
-  while (strengths.length < 3) strengths.push({ point: '—', evidence: '—' });
-  while (improvements.length < 3) improvements.push({ point: '—', evidence: '—' });
-
-  return {
-    verdict,
-    verdict_reason,
-    completion_note,
-    section_scores,
-    strengths: strengths.slice(0, 6),
-    improvements: improvements.slice(0, 6),
-    faang_bar_assessment: String(raw.faang_bar_assessment || '').trim(),
-    next_session_focus: Array.isArray(raw.next_session_focus)
-      ? raw.next_session_focus.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 6)
-      : [],
-  };
-}
-
-/**
- * Deterministic caps so short / low-coverage sessions cannot surface Hire/Strong Hire from model drift.
- * @param {Record<string, unknown>|null} debrief
- * @param {import('mongoose').Document} interview
- * @param {Array<{ id?: string, status?: string }>} [coverageOverride] same map as debrief prompt (section index coverage)
+ * Deterministic caps so short / low-coverage sessions cannot surface
+ * Hire/Strong Hire from model drift.
  */
 export function applyDebriefVerdictGuards(debrief, interview, coverageOverride) {
   if (!debrief || typeof debrief !== 'object') return debrief;
 
-  if (debrief.debrief_kind === 'system_design_rubric') {
-    const coverageMap =
-      Array.isArray(coverageOverride) && coverageOverride.length
-        ? coverageOverride
-        : Array.isArray(interview.orchestrator_state?.debrief_section_coverage_map)
-          ? interview.orchestrator_state.debrief_section_coverage_map
-          : [];
-    return applySystemDesignDebriefGuards(debrief, interview, coverageMap);
-  }
-
-  const os = interview.orchestrator_state || {};
-  const min = typeof os.debrief_elapsed_minutes === 'number' ? os.debrief_elapsed_minutes : null;
-  const timePct = typeof os.debrief_time_completion_pct === 'number' ? os.debrief_time_completion_pct : null;
+  const ls = liveStateOf(interview);
   const coverageMap =
     Array.isArray(coverageOverride) && coverageOverride.length
       ? coverageOverride
-      : Array.isArray(os.debrief_section_coverage_map)
-        ? os.debrief_section_coverage_map
+      : Array.isArray(ls.debrief_section_coverage_map)
+        ? ls.debrief_section_coverage_map
         : [];
+
+  const min = typeof ls.debrief_elapsed_minutes === 'number' ? ls.debrief_elapsed_minutes : null;
+  const secPct =
+    typeof ls.debrief_section_progress_pct === 'number' ? ls.debrief_section_progress_pct : null;
   const hasNotReached = coverageMap.some((r) => r && r.status === 'not_reached');
+  const scoreNum = parseOverallScoreFraction(debrief);
 
   for (const row of coverageMap) {
-    if (row && row.status === 'not_reached' && row.id && debrief.section_scores && debrief.section_scores[row.id]) {
+    if (
+      row &&
+      row.status === 'not_reached' &&
+      row.id &&
+      debrief.section_scores &&
+      debrief.section_scores[row.id]
+    ) {
       debrief.section_scores[row.id] = {
-        score: null,
+        weighted_score: '—/4.0',
         status: 'not_reached',
-        comment: 'Section not covered.',
+        signals: [],
       };
     }
   }
-
-  let verdict = debrief.verdict;
-  const before = verdict;
-  const reason0 = typeof debrief.verdict_reason === 'string' ? debrief.verdict_reason : '';
-
-  if (min != null && min < 5 && (verdict === 'Hire' || verdict === 'Strong Hire')) {
-    verdict = 'Incomplete — Cannot Assess';
-  }
-
-  if (timePct != null && timePct < 40) {
-    verdict = 'Incomplete — Cannot Assess';
-  }
-
-  if (timePct != null && timePct >= 40 && timePct < 60) {
-    const attempted = coverageMap.filter((r) => r && (r.status === 'completed' || r.status === 'partial'));
-    const scores = debrief.section_scores || {};
-    const allFour =
-      attempted.length > 0 &&
-      attempted.every((r) => {
-        const e = scores[r.id];
-        return e && e.score === 4;
-      });
-    if (!allFour && (verdict === 'Hire' || verdict === 'Strong Hire')) {
-      verdict = 'No Hire';
-    }
-  }
-
-  if (hasNotReached && verdict === 'Strong Hire') {
-    verdict = 'Hire';
-  }
-
-  if (verdict !== before) {
-    debrief.verdict = verdict;
-    const note =
-      verdict === 'Incomplete — Cannot Assess'
-        ? '[Verdict capped: duration/coverage vs planned interview.]'
-        : '[Verdict adjusted for coverage and scoring rules.]';
-    debrief.verdict_reason = [reason0.trim(), note].filter(Boolean).join(' ');
-  }
-
-  return debrief;
-}
-
-/**
- * Verdict caps for system design rubric debrief (non-negotiable rules from report prompt).
- * @param {Record<string, unknown>} debrief
- * @param {import('mongoose').Document} interview
- * @param {Array<{ id?: string, status?: string }>} coverageMap
- */
-export function applySystemDesignDebriefGuards(debrief, interview, coverageMap) {
-  const os = interview.orchestrator_state || {};
-  const min = typeof os.debrief_elapsed_minutes === 'number' ? os.debrief_elapsed_minutes : null;
-  const secPct =
-    typeof os.debrief_section_progress_pct === 'number' ? os.debrief_section_progress_pct : null;
-  const hasNotReached = coverageMap.some((r) => r && r.status === 'not_reached');
-  const scoreNum = parseOverallScoreFraction(debrief);
 
   let verdict = debrief.verdict;
   const before = verdict;
@@ -659,7 +515,13 @@ export function applySystemDesignDebriefGuards(debrief, interview, coverageMap) 
   } else if (scoreNum != null && verdict !== 'Incomplete — Cannot Assess') {
     if (scoreNum < 2.0) verdict = 'Strong No Hire';
     else if (scoreNum <= 2.7) verdict = 'No Hire';
-    else if (secPct != null && secPct >= 80 && scoreNum >= 2.8 && scoreNum <= 3.4 && verdict === 'Strong Hire') {
+    else if (
+      secPct != null &&
+      secPct >= 80 &&
+      scoreNum >= 2.8 &&
+      scoreNum <= 3.4 &&
+      verdict === 'Strong Hire'
+    ) {
       verdict = 'Hire';
     }
   }
@@ -671,111 +533,70 @@ export function applySystemDesignDebriefGuards(debrief, interview, coverageMap) 
     const note =
       verdict === 'Incomplete — Cannot Assess'
         ? '[Verdict capped: duration/coverage vs planned interview.]'
-        : '[Verdict adjusted for system design rubric rules.]';
+        : '[Verdict adjusted for v3 debrief rules.]';
     debrief.verdict_reason = [reason0.trim(), note].filter(Boolean).join(' ');
   }
 
   return debrief;
 }
 
-export async function generateStructuredDebrief(interview) {
-  const isSd = String(interview.interview_type || '').toLowerCase() === 'system_design';
-  const plan = interview.execution_plan || {};
-  if (isSd && plan.primary_question) {
-    return generateSystemDesignStructuredDebrief(interview);
-  }
+/* --------------------------- Main entry ------------------------------ */
 
-  const pq = plan.primary_question;
-  const sections = plan.sections || [];
+async function generateV3StructuredDebrief(interview) {
+  const config = getInterviewConfig(interview);
+  const sections = Array.isArray(config?.sections) ? config.sections : [];
   const sectionIds = sections.map((s) => s.id).filter(Boolean);
-  const candidateLevel = deriveCandidateLevel(interview);
-  const os = interview.orchestrator_state || {};
+  const ls = liveStateOf(interview);
 
-  const startedAt =
-    os.session_wall_start_ms ??
-    (interview.session_started_at ? new Date(interview.session_started_at).getTime() : Date.now());
-  const endedAt =
-    os.session_ended_at_ms != null && Number.isFinite(os.session_ended_at_ms)
-      ? os.session_ended_at_ms
-      : Date.now();
-  const totalMinutes = ((endedAt - startedAt) / 60000).toFixed(1);
-  const expectedMinutes = plan.total_minutes ?? 60;
-  const completionPct = Math.round((parseFloat(totalMinutes) / expectedMinutes) * 100);
-  const curIdx = os.current_section_index ?? 0;
-  const sectionsAttempted = curIdx + 1;
-  const totalSections = sections.length;
-  const sectionCoverageMap = sections.map((s, i) => ({
-    id: s.id,
-    name: s.name,
-    status: i < curIdx ? 'completed' : i === curIdx ? 'partial' : 'not_reached',
-  }));
-  const strongSig = os.candidate_knowledge_map?.strong || [];
-  const weakSig = os.candidate_knowledge_map?.weak || [];
-  const transcript = transcriptCompactIc(interview);
-  const questionTitle = pq && typeof pq === 'object' ? pq.title : 'System design';
+  // Coverage from the substrate (already computed by recordSessionEndMetadata,
+  // but recompute here in case finalize was called without it).
+  const flagsBySection = ls?.flags_by_section || {};
+  const performanceBySection = ls?.performance_by_section || {};
+  const sectionMinutesUsed = ls?.section_minutes_used || {};
+  const evalHistory = Array.isArray(ls?.eval_history) ? ls.eval_history : [];
+  const everTouched = new Set();
+  for (const e of evalHistory) {
+    if (e?.recommended_section_focus_id) everTouched.add(e.recommended_section_focus_id);
+  }
+  const sectionCoverageMap = sections.map((s) => {
+    const id = s.id;
+    const hasFlags = Array.isArray(flagsBySection[id]) && flagsBySection[id].length > 0;
+    const hasPerf = !!performanceBySection[id];
+    const hasTime = (sectionMinutesUsed[id] || 0) > 0.5;
+    const touched = everTouched.has(id);
+    let status = 'not_reached';
+    if (hasFlags || hasPerf) status = 'completed';
+    else if (touched || hasTime) status = 'partial';
+    return { id, name: s.label || s.name || id, status };
+  });
 
-  const prompt = `FAANG interview debrief. Return JSON only, no preamble.
-
-LEVEL: ${candidateLevel}
-QUESTION: ${questionTitle}
-INTERVIEW DURATION: ${totalMinutes} minutes (expected ${expectedMinutes} min)
-COMPLETION: ${completionPct}% of planned interview
-SECTIONS ATTEMPTED: ${sectionsAttempted} of ${totalSections}
-SECTION COVERAGE: ${JSON.stringify(sectionCoverageMap)}
-SIGNALS: strong=[${strongSig}] weak=[${weakSig}]
-
-TRANSCRIPT:
-${transcript}
-
-SCORING RULES (non-negotiable):
-- If completion < 40%: verdict MUST be "Incomplete — Cannot Assess"
-- If completion 40-60%: verdict capped at "No Hire" unless every attempted section scored 4
-- If sections with status "not_reached" exist: those score null, cannot be Strong Hire
-- Scores must reflect transcript evidence — if candidate said little, score is low
-- A 5-minute interview cannot produce Hire or Strong Hire under any circumstance
-- Strengths and improvements must quote or reference specific transcript moments
-  If transcript is too short to find evidence, say "insufficient data"
-
-Return:
-{
-  "verdict": "Strong Hire|Hire|No Hire|Strong No Hire|Incomplete — Cannot Assess",
-  "verdict_reason": "2 sentences. Must reference duration and coverage explicitly if incomplete.",
-  "completion_note": "X of Y sections covered in Z minutes. [Any sections not reached].",
-  "section_scores": {
-    "section_id": {
-      "score": 1-4 or null,
-      "status": "completed|partial|not_reached",
-      "comment": "1 sentence with specific transcript evidence. If not_reached: 'Section not covered.'"
-    }
-  },
-  "strengths": [
-    { "point": "...", "evidence": "direct quote or specific moment. If none: 'Insufficient data'" }
-  ],
-  "improvements": [
-    { "point": "...", "evidence": "direct quote or specific moment." }
-  ],
-  "faang_bar_assessment": "3-4 sentences. Must mention what was NOT covered and why that affects assessment.",
-  "next_session_focus": ["topic1", "topic2", "topic3"]
-}
-
-Score key: 1=below bar 2=approaching bar 3=meets bar 4=exceeds bar null=not assessed`;
+  const prompt = buildV3DebriefPrompt(config, ls, interview);
 
   const raw = await invokeLLM({
     prompt,
-    response_json_schema: DEBRIEF_SCHEMA,
+    response_json_schema: SD_DEBRIEF_SCHEMA,
     modelTier: 'extraction',
   });
-  const normalized = normalizeStructuredDebrief(raw, sectionIds, sectionCoverageMap);
+  const normalized = normalizeSdStructuredDebrief(raw, sectionIds, sectionCoverageMap);
   return applyDebriefVerdictGuards(normalized, interview, sectionCoverageMap);
 }
 
-export async function extractHistorySignals(interview) {
-  const prompt = `From this mock interview transcript, produce structured signals for the candidate's profile (used to personalize a future session).
+export async function generateStructuredDebrief(interview) {
+  return generateV3StructuredDebrief(interview);
+}
 
-Questions and answers:
-${(interview.questions || [])
-  .map((q, i) => `Q${i + 1}: ${q.question}\nA: ${q.answer}\nFeedback: ${q.feedback || ''}`)
-  .join('\n\n')}
+export async function extractHistorySignals(interview) {
+  const turns = Array.isArray(interview.conversation_turns) ? interview.conversation_turns : [];
+  const transcript = turns.length
+    ? turns.map((t) => `${t.role === 'interviewer' ? 'I' : 'C'}: ${t.content}`).join('\n')
+    : (interview.questions || [])
+        .map((q, i) => `Q${i + 1}: ${q.question}\nA: ${q.answer}`)
+        .join('\n\n');
+
+  const prompt = `From this interview transcript, produce structured signals for the candidate's profile (used to personalize a future session).
+
+TRANSCRIPT:
+${transcript}
 
 Return JSON with section_scores (object mapping section id to 0-1 score if inferable), topic_signals { weak, strong, never_tested }, notable_quotes (short strings), recommendation (strong_hire | hire | no_hire | neutral).`;
 
@@ -784,33 +605,6 @@ Return JSON with section_scores (object mapping section id to 0-1 score if infer
     response_json_schema: EXTRACTION_SCHEMA,
     modelTier: 'extraction',
   });
-}
-
-export async function generateSummaryFeedback(interview) {
-  const isVideo = interview.interview_mode === 'video';
-  const prompt = `Based on this mock interview for ${interview.role_title} at ${interview.company} (mode: ${interview.interview_mode}), provide:
-1. A summary feedback paragraph (3-4 sentences)
-2. Top 3 strengths
-3. Top 3 areas for improvement
-${isVideo ? 'Include observations about presence, body language and eye contact.' : ''}
-
-Questions and scores:
-${(interview.questions || [])
-  .map(
-    (a, i) =>
-      `Q${i + 1}: ${a.question}\nScores: Quality ${a.score_answer_quality}, Clarity ${a.score_english_clarity}, Communication ${a.score_communication}${isVideo ? `, Eye Contact ${a.score_eye_contact}, Body Language ${a.score_body_language}` : ''}`
-  )
-  .join('\n\n')}`;
-
-  return invokeLLM({
-    prompt,
-    response_json_schema: SUMMARY_SCHEMA,
-  });
-}
-
-function avg(arr, key) {
-  if (!arr.length) return 0;
-  return Math.round(arr.reduce((s, a) => s + (a[key] || 0), 0) / arr.length);
 }
 
 /**
@@ -822,35 +616,25 @@ export async function finalizeOrchestratedInterview(interview) {
     return interview;
   }
 
-  if (interview.execution_plan && interview.orchestrator_state && !interview.orchestrator_state.session_ended_at_ms) {
+  const ls = liveStateOf(interview);
+  const config = getInterviewConfig(interview);
+  if (config && Object.keys(config).length > 0 && ls && !ls.session_ended_at_ms) {
     recordSessionEndMetadata(interview, { source: 'finalize_fallback' });
   }
 
-  const isVideo = interview.interview_mode === 'video';
-  const qs = interview.questions || [];
-  const avgQuality = avg(qs, 'score_answer_quality');
-  const avgClarity = avg(qs, 'score_english_clarity');
-  const avgComm = avg(qs, 'score_communication');
-  const avgEye = isVideo ? avg(qs, 'score_eye_contact') : null;
-  const avgBody = isVideo ? avg(qs, 'score_body_language') : null;
-  const scores = [avgQuality, avgClarity, avgComm, ...(isVideo ? [avgEye, avgBody] : [])];
-  const overall = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-
-  const os = interview.orchestrator_state;
   const startedMs = interview.session_started_at
     ? new Date(interview.session_started_at).getTime()
     : Date.now();
   const endedMs =
-    os?.session_ended_at_ms != null && Number.isFinite(os.session_ended_at_ms)
-      ? os.session_ended_at_ms
+    ls?.session_ended_at_ms != null && Number.isFinite(ls.session_ended_at_ms)
+      ? ls.session_ended_at_ms
       : Date.now();
   const duration_seconds = Math.round(Math.max(0, endedMs - startedMs) / 1000);
 
-  const needsDebrief = Boolean(interview.execution_plan?.primary_question);
+  const needsDebrief = Boolean(config?.problem || config?.primary_question);
 
-  const [extracted, summary, debrief] = await Promise.all([
+  const [extracted, debrief] = await Promise.all([
     extractHistorySignals(interview),
-    generateSummaryFeedback(interview),
     needsDebrief ? generateStructuredDebrief(interview) : Promise.resolve(null),
   ]);
 
@@ -859,33 +643,27 @@ export async function finalizeOrchestratedInterview(interview) {
     interviewClientId: interview.clientId,
     completedAt: new Date(),
     template_id: interview.template_id,
-    section_scores: extracted.section_scores || {},
+    section_scores: extracted?.section_scores || {},
     topic_signals: {
-      weak: extracted.topic_signals?.weak || [],
-      strong: extracted.topic_signals?.strong || [],
-      never_tested: extracted.topic_signals?.never_tested || [],
+      weak: extracted?.topic_signals?.weak || [],
+      strong: extracted?.topic_signals?.strong || [],
+      never_tested: extracted?.topic_signals?.never_tested || [],
     },
-    notable_quotes: extracted.notable_quotes || [],
-    recommendation: extracted.recommendation || 'neutral',
+    notable_quotes: extracted?.notable_quotes || [],
+    recommendation: extracted?.recommendation || 'neutral',
   });
 
   interview.status = 'completed';
   interview.duration_seconds = duration_seconds;
-  interview.overall_score = overall;
-  interview.score_answer_quality = avgQuality;
-  interview.score_english_clarity = avgClarity;
-  interview.score_communication = avgComm;
-  if (isVideo) {
-    interview.score_eye_contact = avgEye;
-    interview.score_body_language = avgBody;
-  }
-  interview.summary_feedback = summary.summary_feedback;
-  interview.strengths = summary.strengths;
-  interview.improvements = summary.improvements;
+
   if (debrief && typeof debrief === 'object') {
     interview.debrief = debrief;
+    const rubricFraction = parseOverallScoreFraction(debrief);
+    if (rubricFraction != null) {
+      interview.overall_score = Math.round((rubricFraction / 4) * 100);
+    }
   }
-  await interview.save();
 
+  await interview.save();
   return interview;
 }

@@ -88,8 +88,9 @@ export const config = {
     password: envString('DEMO_USER_PASSWORD', 'demo123456'),
     name: envString('DEMO_USER_NAME', 'Demo User'),
   },
-  /** Set OPENROUTER_API_KEY to use OpenRouter; if unset, the mock LLM is used. */
+  /** Set OPENROUTER_API_KEY to use OpenRouter; if unset, the mock LLM is used (dev-only). */
   openRouterApiKey: (process.env.OPENROUTER_API_KEY || '').trim(),
+  /** Universal fallback model when a per-tier override is not configured. */
   openRouterModel: envString('OPENROUTER_MODEL', 'openai/gpt-4o-mini'),
   openRouterBaseUrl: envString('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1').replace(/\/$/, ''),
   openRouterHttpReferer: envString(
@@ -97,10 +98,26 @@ export const config = {
     parseOrigins(envString('FRONTEND_ORIGIN', 'http://localhost:5173'))[0] || 'http://localhost:5173'
   ),
   openRouterAppTitle: envString('OPENROUTER_APP_TITLE', 'InterviewAI'),
-  /** When true, new interviews use server session orchestration (session/start, session/turn). Legacy rows unchanged. */
-  orchestrationEnabled: envBool('ORCHESTRATION_ENABLED', true),
-  openRouterDecisionModel: envString('OPENROUTER_DECISION_MODEL', ''),
-  openRouterAdaptationModel: envString('OPENROUTER_ADAPTATION_MODEL', ''),
+  /**
+   * Streaming interviewer voice — the call the candidate actually hears.
+   *
+   * Default is `openai/gpt-4o` so the conversational tier shares the same
+   * billing path as the other OpenAI tiers; any OpenRouter account that can
+   * call gpt-4o-mini can usually also call gpt-4o. For the most natural
+   * pacing/persona, override this with `anthropic/claude-3.5-sonnet`
+   * (requires Anthropic-model access on your OpenRouter account).
+   */
+  openRouterConversationalModel: envString(
+    'OPENROUTER_CONVERSATIONAL_MODEL',
+    'openai/gpt-4o'
+  ),
+  /** Background JSON eval call after each turn (rubric signals + section progress). */
+  openRouterEvalModel: envString('OPENROUTER_EVAL_MODEL', 'openai/gpt-4o-mini'),
+  /** One-shot final debrief / report at the end of the interview. */
+  openRouterDebriefModel: envString('OPENROUTER_DEBRIEF_MODEL', 'openai/gpt-4o'),
+  /** Opening framing call at session start. */
+  openRouterOpeningModel: envString('OPENROUTER_OPENING_MODEL', 'openai/gpt-4o-mini'),
+  /** Cross-session history signal extraction (interviewCompleteService). */
   openRouterExtractionModel: envString('OPENROUTER_EXTRACTION_MODEL', ''),
   /** When true or a hop count, Express trusts X-Forwarded-* from proxies (see README). */
   trustProxy: parseTrustProxy(),
@@ -108,16 +125,25 @@ export const config = {
   defaultMarketId: envString('DEFAULT_MARKET_ID', 'ROW').toUpperCase(),
 };
 
-/** Effective OpenRouter model for a tier (falls back to openRouterModel). */
+/**
+ * Effective OpenRouter model for a tier (falls back to openRouterModel).
+ * Tiers map to call purpose: 'conversational' (streaming interviewer), 'eval'
+ * (per-turn rubric capture), 'debrief' (final report), 'opening' (session start),
+ * 'extraction' (cross-session history signals).
+ */
 export function resolveOpenRouterModel(tier) {
   const m =
-    tier === 'decision'
-      ? config.openRouterDecisionModel
-      : tier === 'adaptation'
-        ? config.openRouterAdaptationModel
-        : tier === 'extraction'
-          ? config.openRouterExtractionModel
-          : '';
+    tier === 'conversational'
+      ? config.openRouterConversationalModel
+      : tier === 'eval'
+        ? config.openRouterEvalModel
+        : tier === 'debrief'
+          ? config.openRouterDebriefModel
+          : tier === 'opening'
+            ? config.openRouterOpeningModel
+            : tier === 'extraction'
+              ? config.openRouterExtractionModel
+              : '';
   return (m && m.trim()) || config.openRouterModel;
 }
 

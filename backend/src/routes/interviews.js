@@ -3,15 +3,18 @@ import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { authMiddleware } from '../middleware/auth.js';
 import { Interview } from '../models/Interview.js';
-import { config } from '../config.js';
-import { resolveTemplateId } from '../services/templateResolve.js';
+import { loadInterviewConfig, INTERVIEW_CONFIG_ID } from '../services/interviewConfig.js';
 import {
   startInterviewSession,
-  processInterviewTurn,
+  appendCandidateTurn,
+  appendInterviewerTurn,
+  runBackgroundEvalCapture,
+  streamInterviewerReply,
+  YEARS_EXPERIENCE_BANDS,
 } from '../services/interviewSessionService.js';
 import { finalizeOrchestratedInterview } from '../services/interviewCompleteService.js';
 import { recordSessionEndMetadata } from '../services/interviewDebriefContext.js';
-import { YEARS_EXPERIENCE_BANDS } from '../services/interviewLevel.js';
+import { resolveTargetLevel, isValidTargetLevel } from '../config/targetLevels.js';
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -49,7 +52,9 @@ export function buildTranscriptMessagesForApi(interviewPlain) {
     messages.push({ role, content });
   }
 
-  const orchestrated = Boolean(interviewPlain.template_id && interviewPlain.execution_plan);
+  const orchestrated = Boolean(
+    interviewPlain.template_id && (interviewPlain.interview_config || interviewPlain.execution_plan)
+  );
   if (orchestrated && messages[0]?.role === 'candidate') {
     const recovered = String(interviewPlain.questions?.[0]?.question || '').trim();
     const opening = String(interviewPlain.orchestrator_state?.pending_question_text || '').trim();
@@ -81,18 +86,9 @@ export function buildTranscriptMessagesForApi(interviewPlain) {
 export function serializeInterviewDoc(doc, options = {}) {
   if (!doc) return null;
   const o = doc.toObject ? doc.toObject() : doc;
-  const {
-    _id,
-    userId,
-    clientId,
-    __v,
-    createdAt,
-    updatedAt,
-    ...rest
-  } = o;
+  const { _id, userId, clientId, __v, createdAt, updatedAt, ...rest } = o;
   const out = {
     id: clientId,
-    orchestration_enabled: config.orchestrationEnabled,
     ...rest,
   };
   if (options.includeTranscript) {
@@ -100,6 +96,24 @@ export function serializeInterviewDoc(doc, options = {}) {
   }
   return out;
 }
+
+/* ---------------- SSE helpers ---------------- */
+
+function openSseStream(res) {
+  res.status(200);
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx proxy buffering if present
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+}
+
+function writeSseEvent(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+/* ---------------- Routes ---------------- */
 
 router.get('/', async (req, res) => {
   try {
@@ -124,7 +138,19 @@ router.get('/', async (req, res) => {
   }
 });
 
-/** POST body (orchestrated interviews): role_title, role_track, company, experience_level, years_experience_band (0_2|2_5|5_8|8_12|12_plus), interview_type, interview_mode, industry (optional). */
+/**
+ * POST body (orchestrated interviews):
+ *   - role_title, role_track, company, interview_mode, industry (optional)
+ *   - target_level: one of INTERN | SDE_1 | SDE_2 | SR_SDE | PRINCIPAL_STAFF | SR_PRINCIPAL.
+ *
+ * v3 single-problem mode: there is exactly one interview config (URL
+ * shortener). `interview_type` and `template_id` are pinned; legacy clients
+ * may still send other values but they are ignored.
+ *
+ * Legacy clients may still send `experience_level` + `years_experience_band` —
+ * we accept those, derive `target_level` via resolveTargetLevel, and persist
+ * both so old debrief logic keeps working.
+ */
 router.post('/', async (req, res) => {
   try {
     const userObjectId = toUserObjectId(req.userId);
@@ -142,20 +168,29 @@ router.post('/', async (req, res) => {
       });
     }
 
-    let template_id;
-    let template_version;
-    if (config.orchestrationEnabled) {
-      const r = resolveTemplateId({
-        role_title: body.role_title,
-        role_track: body.role_track,
-        experience_level: body.experience_level,
-        interview_type: body.interview_type,
-        industry: body.industry,
-        template_id: body.template_id,
+    if (
+      body.target_level != null &&
+      body.target_level !== '' &&
+      !isValidTargetLevel(String(body.target_level))
+    ) {
+      return res.status(400).json({
+        error:
+          'Invalid target_level. Allowed: INTERN, SDE_1, SDE_2, SR_SDE, PRINCIPAL_STAFF, SR_PRINCIPAL.',
       });
-      template_id = r.template_id;
-      template_version = r.template_version;
     }
+
+    const targetLevel = resolveTargetLevel(body);
+    const legacyExperienceLevel =
+      body.experience_level ||
+      ({
+        INTERN: 'entry',
+        SDE_1: 'entry',
+        SDE_2: 'mid',
+        SR_SDE: 'senior',
+        PRINCIPAL_STAFF: 'staff',
+        SR_PRINCIPAL: 'principal',
+      })[targetLevel] ||
+      '';
 
     const row = await Interview.create({
       userId: userObjectId,
@@ -165,15 +200,16 @@ router.post('/', async (req, res) => {
       role_title: body.role_title,
       role_track: body.role_track,
       company: body.company,
-      experience_level: body.experience_level,
+      experience_level: body.experience_level || legacyExperienceLevel,
       years_experience_band: body.years_experience_band || undefined,
-      interview_type: body.interview_type,
+      target_level: targetLevel,
+      interview_type: 'system_design',
       industry: body.industry || '',
       interview_mode: body.interview_mode ?? 'chat',
       duration_seconds: body.duration_seconds,
-      questions: Array.isArray(body.questions) ? body.questions : [],
-      template_id,
-      template_version,
+      template_id: INTERVIEW_CONFIG_ID,
+      template_version: 'v3',
+      selected_template_id: INTERVIEW_CONFIG_ID,
     });
     return res.status(201).json(serializeInterviewDoc(row));
   } catch (e) {
@@ -186,9 +222,6 @@ router.post('/:clientId/session/start', async (req, res) => {
   try {
     const userObjectId = toUserObjectId(req.userId);
     if (!userObjectId) return res.status(401).json({ error: 'Unauthorized' });
-    if (!config.orchestrationEnabled) {
-      return res.status(400).json({ error: 'Orchestration disabled' });
-    }
     const doc = await Interview.findOne({
       userId: userObjectId,
       clientId: req.params.clientId,
@@ -208,7 +241,16 @@ router.post('/:clientId/session/start', async (req, res) => {
   }
 });
 
+/**
+ * Streaming turn endpoint. Sends:
+ *   event: meta  data: { turn_index }            once
+ *   event: token data: { delta }                 N times as tokens arrive
+ *   event: done  data: { interviewer_message }   once when stream completes
+ *   event: state data: { session_state, interview_done } once after eval lands
+ *   event: error data: { message }               on failure
+ */
 router.post('/:clientId/session/turn', async (req, res) => {
+  let opened = false;
   try {
     const userObjectId = toUserObjectId(req.userId);
     if (!userObjectId) return res.status(401).json({ error: 'Unauthorized' });
@@ -216,19 +258,193 @@ router.post('/:clientId/session/turn', async (req, res) => {
     if (!candidate_message || typeof candidate_message !== 'string') {
       return res.status(400).json({ error: 'candidate_message required' });
     }
+
     const doc = await Interview.findOne({
       userId: userObjectId,
       clientId: req.params.clientId,
     }).exec();
     if (!doc) return res.status(404).json({ error: 'Not found' });
-    const result = await processInterviewTurn(doc, candidate_message.trim());
+    if (!doc.interview_config || !doc.template_id) {
+      return res.status(400).json({ error: 'Session not started — call /session/start first' });
+    }
+    if (doc.session_state?.interview_done) {
+      return res.status(409).json({ error: 'Interview already complete' });
+    }
+
+    const config = loadInterviewConfig();
+    const trimmedMessage = candidate_message.trim();
+
+    const candidateTurnIndex = appendCandidateTurn(doc, trimmedMessage);
+
+    openSseStream(res);
+    opened = true;
+    writeSseEvent(res, 'meta', { turn_index: candidateTurnIndex });
+
+    // Disconnect handling — abort the upstream generator if the client bails.
+    const abort = new AbortController();
+    req.on('close', () => abort.abort());
+
+    let assembled = '';
+    // When INTERVIEW_DEBUG_TRACE=1, the streaming layer fills this object with
+    // the executor's prompt + history. We accumulate the reply ourselves below
+    // and stitch them together for the debug timeline.
+    const executorTrace = process.env.INTERVIEW_DEBUG_TRACE === '1' ? {} : null;
+    try {
+      for await (const delta of streamInterviewerReply({
+        interview: doc,
+        config,
+        candidateMessage: trimmedMessage,
+        signal: abort.signal,
+        traceCapture: executorTrace,
+      })) {
+        if (abort.signal.aborted) break;
+        assembled += delta;
+        writeSseEvent(res, 'token', { delta });
+      }
+    } catch (err) {
+      console.error('[session/turn] stream failed:', err);
+      writeSseEvent(res, 'error', { message: err.message || 'Stream failed' });
+      try {
+        res.end();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+
+    if (abort.signal.aborted) {
+      try {
+        res.end();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+
+    const finalReply = assembled.trim();
+    appendInterviewerTurn(doc, finalReply);
+    await doc.save();
+
+    writeSseEvent(res, 'done', { interviewer_message: finalReply });
+
+    if (executorTrace) {
+      executorTrace.reply = finalReply;
+      executorTrace.duration_ms = executorTrace.started_at
+        ? Date.now() - executorTrace.started_at
+        : null;
+    }
+
+    // Background eval capture — don't block the user's bubble on this.
+    try {
+      const { interviewDone } = await runBackgroundEvalCapture(doc, {
+        config,
+        candidateMessage: trimmedMessage,
+        interviewerReply: finalReply,
+        candidateTurnIndex,
+        executorTrace,
+      });
+      writeSseEvent(res, 'state', {
+        session_state: doc.session_state,
+        interview_done: !!interviewDone,
+      });
+    } catch (err) {
+      console.warn('[session/turn] eval capture failed:', err);
+      // The user already has the reply; emit a non-fatal state event.
+      writeSseEvent(res, 'state', {
+        session_state: doc.session_state,
+        interview_done: !!doc.session_state?.interview_done,
+      });
+    }
+
+    res.end();
+  } catch (e) {
+    console.error(e);
+    if (opened) {
+      try {
+        writeSseEvent(res, 'error', { message: e.message || 'Turn failed' });
+        res.end();
+      } catch {
+        /* ignore */
+      }
+    } else {
+      res.status(500).json({ error: e.message || 'Turn failed' });
+    }
+  }
+});
+
+/**
+ * Debug-only: per-turn trace of Executor + Planner prompts, outputs, and
+ * applied directive. Local-only feature gated by INTERVIEW_DEBUG_TRACE=1.
+ *
+ * Returns 404 (not 403) when the flag is off, to avoid signalling that this
+ * endpoint exists in production. Auth is reused from the router-level
+ * middleware so the user must own the interview.
+ */
+router.get('/:clientId/debug-trace', async (req, res) => {
+  if (process.env.INTERVIEW_DEBUG_TRACE !== '1') {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  try {
+    const userObjectId = toUserObjectId(req.userId);
+    if (!userObjectId) return res.status(401).json({ error: 'Unauthorized' });
+    const doc = await Interview.findOne({
+      userId: userObjectId,
+      clientId: req.params.clientId,
+    })
+      .select('clientId session_state target_level role_title interview_type')
+      .exec();
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    const ss = doc.session_state || {};
+    const trace = Array.isArray(ss.debug_trace) ? ss.debug_trace : [];
+    // eval_history rows carry every tripwire flag (leak_guard,
+    // cant_see, reply_leak, verbal_advance, calibrated_advance,
+    // handoff_reconciliation), the post-sanitize candidate_signal, the
+    // derived_move vs planner_recommended_move split, coverage_ok,
+    // elapsed_fraction, section_pressure, section_nudge_count, and
+    // hand_off_targets. The UI joins debug_trace + eval_history by
+    // turn_index to render a compact decision summary without re-parsing
+    // the heavy LLM prompts.
+    const evalHistory = Array.isArray(ss.eval_history) ? ss.eval_history : [];
     return res.json({
       id: doc.clientId,
-      ...result,
+      target_level: doc.target_level || null,
+      role_title: doc.role_title || '',
+      interview_type: doc.interview_type || '',
+      trace,
+      eval_history: evalHistory,
+      enabled: true,
     });
   } catch (e) {
     console.error(e);
-    return res.status(500).json({ error: e.message || 'Turn failed' });
+    return res.status(500).json({ error: 'Debug trace fetch failed' });
+  }
+});
+
+/**
+ * Lightweight refetch for the session state — clients call this if the SSE
+ * connection drops mid-eval, or before navigating away to make sure the last
+ * eval landed.
+ */
+router.get('/:clientId/session/state', async (req, res) => {
+  try {
+    const userObjectId = toUserObjectId(req.userId);
+    if (!userObjectId) return res.status(401).json({ error: 'Unauthorized' });
+    const doc = await Interview.findOne({
+      userId: userObjectId,
+      clientId: req.params.clientId,
+    })
+      .select('clientId session_state status template_id interview_config conversation_turns')
+      .exec();
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    return res.json({
+      id: doc.clientId,
+      session_state: doc.session_state || {},
+      status: doc.status,
+      conversation_turns: doc.conversation_turns || [],
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Get state failed' });
   }
 });
 
@@ -241,30 +457,35 @@ router.post('/:clientId/session/complete', async (req, res) => {
       clientId: req.params.clientId,
     }).exec();
     if (!doc) return res.status(404).json({ error: 'Not found' });
-    if (!doc.execution_plan) {
+    if (!doc.interview_config) {
       return res.status(400).json({ error: 'Not an orchestrated interview' });
     }
     if (doc.status === 'completed') {
       return res.json(serializeInterviewDoc(doc, { includeTranscript: true }));
     }
-    if (!Array.isArray(doc.questions) || doc.questions.length === 0) {
+
+    const turns = Array.isArray(doc.conversation_turns) ? doc.conversation_turns : [];
+    const candidateTurns = turns.filter((t) => t.role === 'candidate').length;
+    if (candidateTurns === 0) {
       return res.status(400).json({
         error: 'Answer at least one question before ending the session so we can generate a report.',
       });
     }
-    let candidateEndedEarlyFromUi = false;
-    if (doc.orchestrator_state && !doc.orchestrator_state.interview_done) {
-      candidateEndedEarlyFromUi = true;
-      doc.orchestrator_state.interview_done = true;
-      doc.orchestrator_state.pending_question_text = '';
-      if (!Array.isArray(doc.conversation_turns)) doc.conversation_turns = [];
+
+    const candidateEndedEarlyFromUi = !doc.session_state?.interview_done;
+    if (candidateEndedEarlyFromUi) {
+      if (!doc.session_state) doc.session_state = {};
+      doc.session_state.interview_done = true;
       doc.conversation_turns.push({
         role: 'interviewer',
         content:
           'You ended the session here — we will generate feedback from everything you shared so far.',
         kind: 'early_complete',
       });
+      doc.markModified('conversation_turns');
+      doc.markModified('session_state');
     }
+
     recordSessionEndMetadata(doc, {
       candidateTriggeredEnd: candidateEndedEarlyFromUi,
       source: candidateEndedEarlyFromUi ? 'session_complete' : 'session_complete_report',
@@ -311,6 +532,25 @@ router.patch('/:clientId', async (req, res) => {
     delete patch.clientId;
     delete patch.userId;
     Object.assign(doc, patch);
+    // Mongoose `Mixed` types do not auto-detect changes from
+    // Object.assign — without an explicit markModified, save() silently
+    // drops the update. The canvas_scene drop on pause/resume traced back
+    // to exactly this. Mark every Mixed field that this PATCH might have
+    // touched so they're persisted.
+    const MIXED_FIELDS = [
+      'canvas_scene',
+      'session_state',
+      'interview_config',
+      'execution_plan',
+      'orchestrator_state',
+      'adaptation_raw',
+      'debrief',
+    ];
+    for (const f of MIXED_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(patch, f)) {
+        doc.markModified(f);
+      }
+    }
     await doc.save();
     return res.json(serializeInterviewDoc(doc, { includeTranscript: true }));
   } catch (e) {

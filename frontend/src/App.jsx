@@ -15,6 +15,7 @@ import Interview from '@/pages/Interview';
 import Report from '@/pages/Report';
 import Dashboard from '@/pages/Dashboard';
 import History from '@/pages/History';
+import DebugTimeline from '@/pages/DebugTimeline';
 
 const AppRoutes = () => {
   const { isLoadingAuth } = useAuth();
@@ -34,6 +35,7 @@ const AppRoutes = () => {
       <Route path="/register" element={<Register />} />
       <Route element={<RequireAuth />}>
         <Route path="/interview" element={<Interview />} />
+        <Route path="/interview/:id/debug" element={<DebugTimeline />} />
         <Route element={<Layout />}>
           <Route path="/setup" element={<Setup />} />
           <Route path="/report" element={<Report />} />

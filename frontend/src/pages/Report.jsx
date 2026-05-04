@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -10,9 +10,12 @@ import {
   ChevronDown,
   ChevronUp,
   MessageSquareText,
+  Target,
+  Lightbulb,
+  TrendingUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { getInterview } from '@/api/interviews';
+import { getInterview } from "@/api/interviews";
 import ScoreGauge from "../components/ScoreGauge";
 import AIFeedbackSummary from "../components/AIFeedbackSummary";
 import { ScoreRadarChart, ScoreProgressionChart, ScoreLegend } from "../components/ScoreBreakdownChart";
@@ -25,28 +28,202 @@ import {
   aggregateOrchestratedQuestionsForCharts,
 } from "@/utils/interviewReport";
 
+/**
+ * The new orchestrator stops writing into `questions[]` and instead persists
+ * everything into `session_state` + `debrief`. Detect the new shape so we can
+ * skip the legacy 5-pip / per-question chart blocks entirely; old rows still
+ * render through the legacy code path further down.
+ */
+function isNewShape(interview) {
+  if (!interview) return false;
+  const ss = interview.session_state;
+  if (ss && typeof ss === "object" && Object.keys(ss).length > 0) return true;
+  if (interview.debrief && typeof interview.debrief === "object") return true;
+  return false;
+}
+
+function VerdictBadge({ verdict }) {
+  const v = String(verdict || "").trim();
+  const tone = (() => {
+    if (v.startsWith("Strong Hire")) return "bg-emerald-500/15 text-emerald-500 border-emerald-500/30";
+    if (v === "Hire") return "bg-emerald-500/10 text-emerald-600 border-emerald-500/20";
+    if (v === "No Hire") return "bg-amber-500/15 text-amber-600 border-amber-500/30";
+    if (v.startsWith("Strong No Hire")) return "bg-rose-500/15 text-rose-500 border-rose-500/30";
+    return "bg-muted text-muted-foreground border-border/50";
+  })();
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold ${tone}`}>
+      {v || "—"}
+    </span>
+  );
+}
+
+function SignalScorePill({ score }) {
+  if (score == null) {
+    return (
+      <span className="inline-flex h-6 min-w-[2.5rem] items-center justify-center rounded-md border border-border/50 bg-background/40 px-2 text-xs font-mono text-muted-foreground">
+        —
+      </span>
+    );
+  }
+  const tone =
+    score >= 4
+      ? "bg-emerald-500/15 text-emerald-600 border-emerald-500/30"
+      : score === 3
+        ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20"
+        : score === 2
+          ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/30"
+          : "bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30";
+  return (
+    <span className={`inline-flex h-6 min-w-[2.5rem] items-center justify-center rounded-md border px-2 text-xs font-mono font-semibold ${tone}`}>
+      {score}/4
+    </span>
+  );
+}
+
+function SectionStatusPill({ status, weighted }) {
+  const s = String(status || "").trim() || "completed";
+  const tone =
+    s === "not_reached"
+      ? "bg-muted text-muted-foreground border-border/40"
+      : s === "partial"
+        ? "bg-amber-500/10 text-amber-600 border-amber-500/30"
+        : "bg-emerald-500/10 text-emerald-600 border-emerald-500/30";
+  return (
+    <div className="flex items-center gap-2 shrink-0">
+      <span className={`text-[10px] font-semibold uppercase tracking-wide rounded-full border px-2 py-0.5 ${tone}`}>
+        {s.replace(/_/g, " ")}
+      </span>
+      {weighted ? (
+        <span className="font-mono text-xs font-semibold tabular-nums text-foreground">{weighted}</span>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Section card with per-signal evidence rows. Used for both system_design
+ * rubric debriefs (nested SD shape) and the simpler per-section comment shape.
+ */
+function SectionScoreCard({ id, label, entry }) {
+  if (!entry) return null;
+
+  const signals = Array.isArray(entry.signals) ? entry.signals : null;
+  const weighted = entry.weighted_score || null;
+
+  return (
+    <div className="rounded-2xl border border-border/40 bg-card/60 p-5">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="min-w-0">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Section</p>
+          <p className="text-sm font-semibold text-foreground truncate">{label || id}</p>
+        </div>
+        <SectionStatusPill status={entry.status} weighted={weighted} />
+      </div>
+      {signals ? (
+        signals.length > 0 ? (
+          <ul className="space-y-3 border-t border-border/30 pt-3">
+            {signals.map((sig, i) => (
+              <li key={`${id}-${i}`} className="flex gap-3">
+                <SignalScorePill score={sig.score ?? null} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-foreground">{sig.signal || "Signal"}</p>
+                  {sig.evidence ? (
+                    <p className="text-xs text-muted-foreground mt-1 italic">&ldquo;{sig.evidence}&rdquo;</p>
+                  ) : null}
+                  {sig.what_it_means || sig.score_description ? (
+                    <p className="text-xs text-muted-foreground/90 mt-1">
+                      {sig.what_it_means || sig.score_description}
+                    </p>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : entry.status === "not_reached" ? (
+          <p className="text-xs text-muted-foreground italic border-t border-border/30 pt-3">
+            Section not reached in this session.
+          </p>
+        ) : null
+      ) : entry.comment ? (
+        <p className="text-sm text-muted-foreground leading-relaxed border-t border-border/30 pt-3">
+          {entry.comment}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function MomentList({ items, type }) {
+  if (!Array.isArray(items) || items.length === 0) return null;
+  const isStrength = type === "strength";
+  const Icon = isStrength ? CheckCircle : AlertTriangle;
+  const colorClass = isStrength ? "text-emerald-500" : "text-amber-500";
+  const borderClass = isStrength ? "border-emerald-500/30" : "border-amber-500/30";
+  return (
+    <ul className="space-y-3">
+      {items.map((m, i) => {
+        const point = m.point || m.moment || m.title || "—";
+        const evidence = m.evidence || m.why_it_matters || m.quote || m.detail || "";
+        return (
+          <li key={i} className={`border-l-2 pl-3 ${borderClass}`}>
+            <div className="flex items-start gap-2">
+              <Icon className={`mt-0.5 h-4 w-4 ${colorClass} shrink-0`} />
+              <p className="font-medium text-sm text-foreground">{point}</p>
+            </div>
+            {evidence ? (
+              <p className="text-xs text-muted-foreground mt-1 ml-6 italic">&ldquo;{evidence}&rdquo;</p>
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export default function Report() {
   const navigate = useNavigate();
-  const urlParams = new URLSearchParams(window.location.search);
-  const interviewId = urlParams.get("id");
+  const interviewId = new URLSearchParams(window.location.search).get("id");
   const [interview, setInterview] = useState(null);
   const [expandedQ, setExpandedQ] = useState(null);
 
   useEffect(() => {
-    if (!interviewId) { navigate("/dashboard"); return; }
+    if (!interviewId) {
+      navigate("/dashboard");
+      return;
+    }
     getInterview(interviewId).then(setInterview);
-  }, [interviewId]);
+  }, [interviewId, navigate]);
 
   const orchestrated = Boolean(interview && isOrchestratedSession(interview));
+  const newShape = Boolean(interview && isNewShape(interview));
+
   const transcriptMessages = useMemo(() => {
     if (!interview) return [];
     return buildReportTranscriptMessages(interview);
   }, [interview]);
+
   const chartQuestions = useMemo(() => {
     if (!interview) return [];
     if (isOrchestratedSession(interview)) return aggregateOrchestratedQuestionsForCharts(interview);
     return interview.questions || [];
   }, [interview]);
+
+  const sectionRows = useMemo(() => {
+    if (!interview?.debrief?.section_scores) return [];
+    const sections =
+      interview.interview_config?.sections || interview.execution_plan?.sections || [];
+    const labelById = new Map(sections.map((s) => [s.id, s.label || s.name]));
+    return Object.entries(interview.debrief.section_scores).map(([id, raw]) => {
+      const entry =
+        raw != null && typeof raw === "object" && !Array.isArray(raw)
+          ? raw
+          : { score: raw, comment: "", status: "" };
+      return { id, label: labelById.get(id) || id, entry };
+    });
+  }, [interview]);
+
+  const liveSignals = interview?.session_state?.signals;
 
   if (!interview) {
     return (
@@ -72,22 +249,11 @@ export default function Report() {
   };
 
   const { grade, color } = getGrade(interview.overall_score);
-
-  const sessionBreakdownRow = orchestrated ? chartQuestions[0] : null;
-  const sessionAvgScore = sessionBreakdownRow
-    ? Math.round(
-        (sessionBreakdownRow.score_answer_quality +
-          sessionBreakdownRow.score_english_clarity +
-          sessionBreakdownRow.score_communication) /
-          3
-      )
-    : 0;
-
-  const SESSION_EXPAND_KEY = "session";
+  const debrief = interview.debrief;
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 pb-20">
-      {/* Header */}
+      {/* Top nav */}
       <div className="flex items-center justify-between mb-8">
         <Button variant="ghost" className="gap-2 rounded-xl" onClick={() => navigate("/dashboard")}>
           <ArrowLeft className="w-4 h-4" /> Dashboard
@@ -100,7 +266,7 @@ export default function Report() {
         </Button>
       </div>
 
-      {/* Overall Score Card */}
+      {/* Overall card */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -118,18 +284,20 @@ export default function Report() {
             <p className="text-muted-foreground">
               {interview.role_title} at {interview.company}
             </p>
-            <div className="flex items-center justify-center lg:justify-start gap-4 mt-3 text-sm text-muted-foreground">
+            <div className="flex items-center justify-center lg:justify-start gap-4 mt-3 text-sm text-muted-foreground flex-wrap">
               <span className="flex items-center gap-1">
                 <Clock className="w-4 h-4" />
                 {formatDuration(interview.duration_seconds || 0)}
               </span>
               <span>{reportedQuestionCountLabel(interview)}</span>
               <span>{formatInterviewType(interview.interview_type)} interview</span>
+              {debrief?.verdict ? <VerdictBadge verdict={debrief.verdict} /> : null}
             </div>
           </div>
         </div>
       </motion.div>
 
+      {/* Transcript */}
       {transcriptMessages.length > 0 && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -154,211 +322,119 @@ export default function Report() {
         </motion.div>
       )}
 
-      {/* Structured debrief (system design / primary_question templates) */}
-      {interview.debrief && typeof interview.debrief === 'object' && (
+      {/* New-shape: rubric-signal-per-section debrief */}
+      {newShape && debrief && typeof debrief === "object" && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.05 }}
           className="bg-card rounded-3xl border border-border/50 p-8 lg:p-10 mb-8"
         >
-          <h2 className="font-space text-lg font-semibold mb-2">Interview debrief</h2>
-          <p className="text-xs text-muted-foreground mb-6">Structured assessment from your session transcript</p>
-          <div className="flex flex-wrap items-baseline gap-3 mb-4">
-            <span className="font-space text-2xl font-bold">{interview.debrief.verdict || '—'}</span>
-            {interview.debrief.overall_score ? (
-              <span className="text-sm text-muted-foreground font-space">
-                Overall: <span className="font-semibold text-foreground">{interview.debrief.overall_score}</span>
+          <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+            <h2 className="font-space text-lg font-semibold">Interview debrief</h2>
+            {debrief.overall_score ? (
+              <span className="text-sm font-semibold text-foreground font-mono">
+                Overall: {debrief.overall_score}
               </span>
             ) : null}
           </div>
-          {(interview.debrief.verdict_reason || interview.debrief.verdict_summary) && (
-            <p className="text-sm text-muted-foreground leading-relaxed mb-4">
-              {interview.debrief.verdict_reason || interview.debrief.verdict_summary}
-            </p>
-          )}
-          {interview.debrief.completion_note ? (
-            <p className="text-xs text-muted-foreground border border-border/40 rounded-xl px-3 py-2 mb-8 bg-muted/20">
-              {interview.debrief.completion_note}
+          {debrief.verdict_reason || debrief.verdict_summary ? (
+            <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+              {debrief.verdict_reason || debrief.verdict_summary}
             </p>
           ) : null}
-          {interview.debrief.section_scores && typeof interview.debrief.section_scores === 'object' && (
-            <div className="mb-8">
-              <h3 className="font-space text-sm font-semibold mb-3">Section scores (1–4)</h3>
-              <div className="grid sm:grid-cols-2 gap-2">
-                {Object.entries(interview.debrief.section_scores).map(([id, rawEntry]) => {
-                  const label = (interview.execution_plan?.sections || []).find((s) => s.id === id)?.name || id;
-                  const entry =
-                    rawEntry != null && typeof rawEntry === 'object' && !Array.isArray(rawEntry)
-                      ? rawEntry
-                      : { score: rawEntry, comment: '', status: '' };
-                  const nestedSd =
-                    entry &&
-                    typeof entry === 'object' &&
-                    'weighted_score' in entry &&
-                    Array.isArray(entry.signals);
-                  if (nestedSd) {
-                    const status = entry.status ? String(entry.status) : '';
-                    return (
-                      <div
-                        key={id}
-                        className="flex flex-col gap-2 rounded-xl border border-border/50 px-4 py-3 text-sm sm:col-span-2"
-                      >
-                        <div className="flex justify-between gap-3 items-start">
-                          <span className="text-muted-foreground">{label}</span>
-                          <div className="flex flex-col items-end gap-0.5 shrink-0">
-                            <span className="font-space font-semibold">{entry.weighted_score || '—'}</span>
-                            {status ? (
-                              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                                {status.replace(/_/g, ' ')}
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                        <ul className="space-y-2 border-t border-border/40 pt-2 mt-1">
-                          {entry.signals.map((sig, j) => (
-                            <li key={j} className="text-xs text-muted-foreground leading-relaxed">
-                              <span className="font-medium text-foreground">{sig.signal || 'Signal'}</span>
-                              {sig.score != null && sig.score !== '' ? (
-                                <span className="ml-2 font-space text-foreground">{sig.score}/4</span>
-                              ) : null}
-                              {sig.evidence ? (
-                                <p className="mt-0.5 italic">&ldquo;{sig.evidence}&rdquo;</p>
-                              ) : null}
-                              {sig.what_it_means ? <p className="mt-0.5">{sig.what_it_means}</p> : null}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    );
-                  }
-                  const comment = entry.comment;
-                  const status = entry.status ? String(entry.status) : '';
-                  const scoreLabel =
-                    entry.score === null || entry.score === undefined || entry.score === ''
-                      ? '—'
-                      : String(entry.score);
-                  return (
-                    <div
-                      key={id}
-                      className="flex flex-col gap-1 rounded-xl border border-border/50 px-4 py-3 text-sm"
-                    >
-                      <div className="flex justify-between gap-3 items-start">
-                        <span className="text-muted-foreground">{label}</span>
-                        <div className="flex flex-col items-end gap-0.5 shrink-0">
-                          <span className="font-space font-semibold">{scoreLabel}</span>
-                          {status ? (
-                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                              {status.replace(/_/g, ' ')}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                      {comment ? (
-                        <p className="text-xs text-muted-foreground leading-relaxed">{comment}</p>
-                      ) : null}
-                    </div>
-                  );
-                })}
+          {debrief.completion_note ? (
+            <p className="text-xs text-muted-foreground border border-border/40 rounded-xl px-3 py-2 mb-6 bg-muted/20">
+              {debrief.completion_note}
+            </p>
+          ) : null}
+
+          {sectionRows.length > 0 && (
+            <div className="space-y-3 mb-8">
+              <h3 className="font-space text-sm font-semibold flex items-center gap-2">
+                <Target className="h-4 w-4 text-accent" /> Section breakdown
+              </h3>
+              {sectionRows.map((row) => (
+                <SectionScoreCard key={row.id} id={row.id} label={row.label} entry={row.entry} />
+              ))}
+            </div>
+          )}
+
+          {Array.isArray(debrief.top_moments) && debrief.top_moments.length > 0 && (
+            <div className="grid md:grid-cols-2 gap-6 mb-8">
+              <div>
+                <h3 className="font-space text-sm font-semibold mb-3 flex items-center gap-2">
+                  <CheckCircle className="w-4 h-4 text-emerald-500" /> Strong moments
+                </h3>
+                <MomentList
+                  items={debrief.top_moments.filter(
+                    (m) => String(m.type).toLowerCase() === "strength"
+                  )}
+                  type="strength"
+                />
+              </div>
+              <div>
+                <h3 className="font-space text-sm font-semibold mb-3 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-500" /> Gaps
+                </h3>
+                <MomentList
+                  items={debrief.top_moments.filter(
+                    (m) => String(m.type).toLowerCase() === "gap"
+                  )}
+                  type="gap"
+                />
               </div>
             </div>
           )}
-          {Array.isArray(interview.debrief.top_moments) && interview.debrief.top_moments.length > 0 && (
-            <div className="mb-8">
-              <h3 className="font-space text-sm font-semibold mb-3">Top moments</h3>
-              <ul className="space-y-3">
-                {interview.debrief.top_moments.map((m, i) => (
-                  <li
-                    key={i}
-                    className={`text-sm border-l-2 pl-3 ${
-                      String(m.type).toLowerCase() === 'strength'
-                        ? 'border-emerald-500/40'
-                        : 'border-amber-500/40'
-                    }`}
-                  >
-                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{m.type}</span>
-                    <p className="font-medium text-foreground">{m.moment}</p>
-                    {m.why_it_matters ? (
-                      <p className="text-xs text-muted-foreground mt-1">{m.why_it_matters}</p>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
+
+          {(Array.isArray(debrief.strengths) && debrief.strengths.length > 0) ||
+          (Array.isArray(debrief.improvements) && debrief.improvements.length > 0) ? (
+            <div className="grid md:grid-cols-2 gap-6 mb-8">
+              {Array.isArray(debrief.strengths) && debrief.strengths.length > 0 && (
+                <div>
+                  <h3 className="font-space text-sm font-semibold mb-3 flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4 text-emerald-500" /> Strengths (with evidence)
+                  </h3>
+                  <MomentList items={debrief.strengths} type="strength" />
+                </div>
+              )}
+              {Array.isArray(debrief.improvements) && debrief.improvements.length > 0 && (
+                <div>
+                  <h3 className="font-space text-sm font-semibold mb-3 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-500" /> Areas to improve
+                  </h3>
+                  <MomentList items={debrief.improvements} type="gap" />
+                </div>
+              )}
             </div>
-          )}
-          <div className="grid md:grid-cols-2 gap-6 mb-8">
-            <div>
-              <h3 className="font-space text-sm font-semibold mb-3 flex items-center gap-2">
-                <CheckCircle className="w-4 h-4 text-emerald-500" /> Strengths (with evidence)
-              </h3>
-              <ul className="space-y-4">
-                {(interview.debrief.strengths?.length
-                  ? interview.debrief.strengths
-                  : (interview.debrief.strengths_evidence || []).map((x) => ({
-                      point: x.title,
-                      evidence: x.quote || x.detail || '',
-                    }))
-                ).map((item, i) => (
-                  <li key={i} className="text-sm border-l-2 border-emerald-500/40 pl-3">
-                    <p className="font-medium text-foreground">{item.point || item.title}</p>
-                    {(item.evidence || item.quote) && (
-                      <p className="text-xs text-muted-foreground mt-1 italic">
-                        &ldquo;{item.evidence || item.quote}&rdquo;
-                      </p>
-                    )}
-                    {item.detail && !item.evidence && !item.quote ? (
-                      <p className="text-xs text-muted-foreground mt-1">{item.detail}</p>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div>
-              <h3 className="font-space text-sm font-semibold mb-3 flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-amber-500" /> Areas to improve
-              </h3>
-              <ul className="space-y-4">
-                {(interview.debrief.improvements?.length
-                  ? interview.debrief.improvements
-                  : (interview.debrief.improvements_evidence || []).map((x) => ({
-                      point: x.title,
-                      evidence: x.quote || x.detail || '',
-                    }))
-                ).map((item, i) => (
-                  <li key={i} className="text-sm border-l-2 border-amber-500/40 pl-3">
-                    <p className="font-medium text-foreground">{item.point || item.title}</p>
-                    {(item.evidence || item.quote) && (
-                      <p className="text-xs text-muted-foreground mt-1 italic">
-                        &ldquo;{item.evidence || item.quote}&rdquo;
-                      </p>
-                    )}
-                    {item.detail && !item.evidence && !item.quote ? (
-                      <p className="text-xs text-muted-foreground mt-1">{item.detail}</p>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-          {interview.debrief.faang_bar_assessment && (
+          ) : null}
+
+          {debrief.faang_bar_assessment ? (
             <div className="rounded-2xl bg-muted/30 border border-border/50 p-5 mb-6">
               <h3 className="font-space text-sm font-semibold mb-2">FAANG bar</h3>
-              <p className="text-sm text-muted-foreground leading-relaxed">{interview.debrief.faang_bar_assessment}</p>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {debrief.faang_bar_assessment}
+              </p>
             </div>
-          )}
-          {Array.isArray(interview.debrief.next_session_focus) && interview.debrief.next_session_focus.length > 0 && (
+          ) : null}
+
+          {Array.isArray(debrief.next_session_focus) && debrief.next_session_focus.length > 0 && (
             <div>
-              <h3 className="font-space text-sm font-semibold mb-2">Next session focus</h3>
+              <h3 className="font-space text-sm font-semibold mb-2 flex items-center gap-2">
+                <Lightbulb className="h-4 w-4 text-accent" /> Focus next session
+              </h3>
               <ul className="flex flex-col gap-2">
-                {interview.debrief.next_session_focus.map((s, i) => {
-                  if (s != null && typeof s === 'object' && (s.area != null || s.reason != null)) {
+                {debrief.next_session_focus.map((s, i) => {
+                  if (s != null && typeof s === "object" && (s.area != null || s.reason != null)) {
                     return (
                       <li
                         key={i}
                         className="rounded-xl bg-accent/10 text-accent-foreground border border-accent/20 px-3 py-2 text-xs"
                       >
-                        <span className="font-medium text-foreground block">{s.area || 'Focus'}</span>
-                        {s.reason ? <span className="text-muted-foreground mt-0.5 block">{s.reason}</span> : null}
+                        <span className="font-medium text-foreground block">{s.area || "Focus"}</span>
+                        {s.reason ? (
+                          <span className="text-muted-foreground mt-0.5 block">{s.reason}</span>
+                        ) : null}
                       </li>
                     );
                   }
@@ -374,9 +450,82 @@ export default function Report() {
               </ul>
             </div>
           )}
+
+          {liveSignals &&
+            ((Array.isArray(liveSignals.strong) && liveSignals.strong.length > 0) ||
+              (Array.isArray(liveSignals.weak) && liveSignals.weak.length > 0)) && (
+              <div className="mt-8 pt-6 border-t border-border/40">
+                <h3 className="font-space text-sm font-semibold mb-3 flex items-center gap-2">
+                  <TrendingUp className="h-4 w-4 text-accent" /> Signals captured live
+                </h3>
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wide text-emerald-500 font-semibold mb-1.5">
+                      Strong
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(liveSignals.strong || []).map((t, i) => (
+                        <span
+                          key={`s-${i}`}
+                          className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wide text-amber-500 font-semibold mb-1.5">
+                      Weak
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(liveSignals.weak || []).map((t, i) => (
+                        <span
+                          key={`w-${i}`}
+                          className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
         </motion.div>
       )}
 
+      {/* ====================== LEGACY VIEW ====================== */}
+      {/* Pre-orchestrator interviews still render the original 5-pip / per-question shape. */}
+      {!newShape && (
+        <LegacyReportSections
+          interview={interview}
+          chartQuestions={chartQuestions}
+          orchestrated={orchestrated}
+          expandedQ={expandedQ}
+          setExpandedQ={setExpandedQ}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Legacy report blocks (pre-new-orchestrator rows) ---------------- */
+
+function LegacyReportSections({ interview, chartQuestions, orchestrated, expandedQ, setExpandedQ }) {
+  const SESSION_EXPAND_KEY = "session";
+  const sessionBreakdownRow = orchestrated ? chartQuestions[0] : null;
+  const sessionAvgScore = sessionBreakdownRow
+    ? Math.round(
+        (sessionBreakdownRow.score_answer_quality +
+          sessionBreakdownRow.score_english_clarity +
+          sessionBreakdownRow.score_communication) /
+          3
+      )
+    : 0;
+
+  return (
+    <>
       {/* Score Breakdown */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -389,7 +538,6 @@ export default function Report() {
         <ScoreCard label="Communication" score={interview.score_communication} desc="Confidence & tone" />
       </motion.div>
 
-      {/* Charts */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -417,10 +565,8 @@ export default function Report() {
         </div>
       </motion.div>
 
-      {/* AI Feedback Summary */}
       <AIFeedbackSummary interview={interview} />
 
-      {/* Strengths & Improvements */}
       <div className="grid md:grid-cols-2 gap-4 mb-8">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -461,12 +607,7 @@ export default function Report() {
         </motion.div>
       </div>
 
-      {/* Question / session breakdown */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.4 }}
-      >
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
         <h2 className="font-space text-lg font-semibold mb-4">
           {orchestrated ? "Session breakdown" : "Question breakdown"}
         </h2>
@@ -495,11 +636,6 @@ export default function Report() {
                     <p className="text-sm font-medium line-clamp-2">
                       {sessionBreakdownRow?.question || "System design session"}
                     </p>
-                    {(interview.questions?.length || 0) > 1 ? (
-                      <p className="text-[11px] text-muted-foreground mt-1">
-                        {(interview.questions?.length || 0)} exchanges — scored as one exercise
-                      </p>
-                    ) : null}
                   </div>
                 </div>
                 {expandedQ === SESSION_EXPAND_KEY ? (
@@ -519,44 +655,6 @@ export default function Report() {
                       <MiniScore label="Quality" score={sessionBreakdownRow?.score_answer_quality} />
                       <MiniScore label="Clarity" score={sessionBreakdownRow?.score_english_clarity} />
                       <MiniScore label="Communication" score={sessionBreakdownRow?.score_communication} />
-                    </div>
-                    {interview.interview_mode === "video" && sessionBreakdownRow?.score_eye_contact != null ? (
-                      <div className="grid grid-cols-2 gap-3">
-                        <MiniScore label="Eye contact" score={sessionBreakdownRow.score_eye_contact} />
-                        <MiniScore label="Body language" score={sessionBreakdownRow.score_body_language} />
-                      </div>
-                    ) : null}
-                    <div>
-                      <p className="text-xs font-medium text-muted-foreground mb-2">Per-exchange scores</p>
-                      <div className="space-y-4">
-                        {(interview.questions || []).map((q, i) => {
-                          const tAvg = Math.round(
-                            (q.score_answer_quality + q.score_english_clarity + q.score_communication) / 3
-                          );
-                          return (
-                            <div key={i} className="rounded-xl border border-border/40 p-4 bg-muted/20">
-                              <div className="flex items-center justify-between gap-2 mb-2">
-                                <span className="text-xs font-semibold text-foreground">Turn {i + 1}</span>
-                                <span className="text-xs font-space text-muted-foreground">Avg {tAvg}</span>
-                              </div>
-                              <p className="text-[11px] text-muted-foreground mb-1">Interviewer</p>
-                              <p className="text-xs leading-relaxed line-clamp-4">{q.question}</p>
-                              <p className="text-[11px] text-muted-foreground mt-2 mb-1">You</p>
-                              <p className="text-sm leading-relaxed whitespace-pre-wrap">{q.answer}</p>
-                              <div className="grid grid-cols-3 gap-2 mt-3">
-                                <MiniScore label="Quality" score={q.score_answer_quality} />
-                                <MiniScore label="Clarity" score={q.score_english_clarity} />
-                                <MiniScore label="Comm." score={q.score_communication} />
-                              </div>
-                              {q.feedback ? (
-                                <p className="text-xs text-muted-foreground mt-2 border-t border-border/30 pt-2">
-                                  {q.feedback}
-                                </p>
-                              ) : null}
-                            </div>
-                          );
-                        })}
-                      </div>
                     </div>
                   </div>
                 </motion.div>
@@ -629,7 +727,7 @@ export default function Report() {
           </div>
         )}
       </motion.div>
-    </div>
+    </>
   );
 }
 

@@ -23,8 +23,13 @@ services:
       FRONTEND_ORIGIN: http://localhost:5173
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o-mini}
+      OPENROUTER_CONVERSATIONAL_MODEL: ${OPENROUTER_CONVERSATIONAL_MODEL:-openai/gpt-4o}
+      OPENROUTER_OPENING_MODEL: ${OPENROUTER_OPENING_MODEL:-openai/gpt-4o-mini}
+      OPENROUTER_EVAL_MODEL: ${OPENROUTER_EVAL_MODEL:-openai/gpt-4o-mini}
+      OPENROUTER_DEBRIEF_MODEL: ${OPENROUTER_DEBRIEF_MODEL:-openai/gpt-4o}
       DEMO_USER_EMAIL: ${DEMO_USER_EMAIL:-demo@interview-ai.local}
       DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:-demo123456}
+      INTERVIEW_DEBUG_TRACE: ${INTERVIEW_DEBUG_TRACE:-0}
     depends_on:
       - mongo
 
@@ -39,6 +44,7 @@ services:
       - ./frontend:/app/frontend
     environment:
       VITE_API_URL: http://localhost:3001
+      VITE_DEBUG_TRACE: ${VITE_DEBUG_TRACE:-0}
     depends_on:
       - backend
 

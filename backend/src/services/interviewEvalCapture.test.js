@@ -3,21 +3,26 @@ import assert from 'node:assert/strict';
 import {
   applyEvalToSessionState,
   buildPrompt,
-  focusLooksLikeRubricLeak,
-  validateExecutorReply,
   deriveAnswerOnly,
+  listUntouchedSections,
+  pickPriorityUntouchedSection,
   SCHEMA,
   MOVES,
   DIFFICULTIES,
   MOMENTUMS,
   BAR_TRAJECTORIES,
   TIME_STATUSES,
+  RESPONSE_PACES,
+  VERDICT_TRAJECTORIES,
+  PROBE_TYPES,
+  CANDIDATE_SIGNALS,
+  UNTOUCHED_PRIORITY,
 } from './interviewEvalCapture.js';
 import { loadInterviewConfig } from './interviewConfig.js';
 
 /* --------------------------- Test helpers ----------------------------- */
 
-function makeInterview() {
+function makeInterview(overrides = {}) {
   return {
     interview_type: 'system_design',
     role_track: 'ic',
@@ -25,6 +30,8 @@ function makeInterview() {
     session_state: {},
     conversation_turns: [],
     session_started_at: new Date(),
+    markModified: () => {},
+    ...overrides,
   };
 }
 
@@ -35,11 +42,18 @@ function baseCaptured(overrides = {}) {
     recommended_section_focus_id: '',
     recommended_focus: '',
     consumed_probe_id: '',
+    current_subtopic: '',
+    consecutive_probes_on_subtopic: 0,
+    requirements_contract: null,
+    breadth_coverage: { components_mentioned: [], components_missing: [] },
+    response_pace: 'normal',
+    pace_turns_tracked: 0,
     probe_observations: [],
     flags: [],
     momentum: 'warm',
     bar_trajectory: 'flat',
     performance_assessment: 'at_target',
+    verdict_trajectory: 'insufficient_data',
     time_status: 'on_track',
     candidate_signal: 'driving',
     interview_done: false,
@@ -50,37 +64,125 @@ function baseCaptured(overrides = {}) {
 
 /* --------------------------- Schema shape ---------------------------- */
 
-test('SCHEMA: v4 move catalog (LET_LEAD, ANSWER_AND_RELEASE, 6 probing, PIVOT_ANGLE, 3 down, 3 transition)', () => {
+test('MOVES enum: v5 catalog (17 moves) — listening/probing/lateral/down/transition', () => {
   for (const m of [
     'LET_LEAD', 'ANSWER_AND_RELEASE',
     'GO_DEEPER', 'CHALLENGE_ASSUMPTION', 'CHALLENGE_TRADEOFF', 'DRAW_NUMBERS',
-    'INJECT_FAULT', 'RAISE_STAKES',
-    'PIVOT_ANGLE', // v4 FIX-1
+    'INJECT_FAULT', 'RAISE_STAKES', 'INJECT_VARIANT',
+    'NUDGE_BREADTH', 'PIVOT_ANGLE',
     'NARROW_SCOPE', 'PROVIDE_ANCHOR', 'SALVAGE_AND_MOVE',
     'HAND_OFF', 'WRAP_TOPIC', 'CLOSE',
   ]) {
     assert.ok(MOVES.includes(m), `expected ${m} in MOVES`);
   }
-  // Old v2 moves dropped:
+  // Old v2 moves removed.
   for (const m of ['PUSH_BACK', 'WHAT_IF', 'CLARIFY_BACK', 'HINT', 'ACK_AND_PROBE', 'STAY']) {
     assert.ok(!MOVES.includes(m), `expected old move ${m} to be dropped`);
   }
 });
 
-test('SCHEMA: current_subtopic + consecutive_probes_on_subtopic are present (v4 FIX-1)', () => {
+test('SCHEMA: v5 NEW fields — requirements_contract / breadth_coverage / response_pace / verdict_trajectory', () => {
+  assert.ok(SCHEMA.properties.requirements_contract, 'requirements_contract must exist');
+  assert.equal(SCHEMA.properties.requirements_contract.type, 'object');
+  for (const f of ['locked', 'functional', 'non_functional', 'in_scope', 'out_of_scope', 'locked_at_turn']) {
+    assert.ok(
+      SCHEMA.properties.requirements_contract.properties?.[f],
+      `requirements_contract.${f} must exist`
+    );
+  }
+
+  assert.ok(SCHEMA.properties.breadth_coverage, 'breadth_coverage must exist');
+  for (const f of ['components_mentioned', 'components_missing']) {
+    assert.ok(
+      SCHEMA.properties.breadth_coverage.properties?.[f],
+      `breadth_coverage.${f} must exist`
+    );
+  }
+
+  assert.ok(SCHEMA.properties.response_pace, 'response_pace must exist');
+  assert.deepEqual(SCHEMA.properties.response_pace.enum, RESPONSE_PACES);
+  assert.ok(SCHEMA.properties.pace_turns_tracked, 'pace_turns_tracked must exist');
+  assert.equal(SCHEMA.properties.pace_turns_tracked.type, 'integer');
+
+  assert.ok(SCHEMA.properties.verdict_trajectory, 'verdict_trajectory must exist');
+  assert.deepEqual(SCHEMA.properties.verdict_trajectory.enum, VERDICT_TRAJECTORIES);
+});
+
+test('SCHEMA: probe_observations carries id and probe_type (v5 NEW)', () => {
+  const probeProps = SCHEMA.properties.probe_observations.items.properties;
+  assert.ok(probeProps.id, 'probe_observations[].id must exist');
+  assert.ok(probeProps.probe_type, 'probe_observations[].probe_type must exist');
+  assert.deepEqual(probeProps.probe_type.enum, PROBE_TYPES);
+});
+
+test('SCHEMA: current_subtopic + consecutive_probes_on_subtopic still present', () => {
   assert.ok(SCHEMA.properties.current_subtopic, 'current_subtopic must exist');
   assert.equal(SCHEMA.properties.current_subtopic.type, 'string');
-  assert.ok(SCHEMA.properties.consecutive_probes_on_subtopic, 'consecutive_probes_on_subtopic must exist');
+  assert.ok(SCHEMA.properties.consecutive_probes_on_subtopic, 'counter must exist');
   assert.equal(SCHEMA.properties.consecutive_probes_on_subtopic.type, 'integer');
 });
 
-test('config: every section has an exit_gate.require_any list (v4 FIX-2)', () => {
+test('SCHEMA: enums', () => {
+  assert.deepEqual(DIFFICULTIES, ['L1', 'L2', 'L3']);
+  assert.deepEqual(MOMENTUMS, ['hot', 'warm', 'cold']);
+  assert.deepEqual(BAR_TRAJECTORIES, ['rising', 'flat', 'falling']);
+  assert.deepEqual(TIME_STATUSES, ['on_track', 'behind', 'critical']);
+  assert.deepEqual(VERDICT_TRAJECTORIES, ['strong_hire', 'hire', 'no_hire', 'strong_no_hire', 'insufficient_data']);
+  assert.deepEqual(RESPONSE_PACES, ['fast', 'normal', 'slow', 'suspiciously_fast']);
+  assert.deepEqual(PROBE_TYPES, ['breadth', 'depth']);
+});
+
+test('SCHEMA: candidate_signal enum includes v5 NEW values (missing_breadth, rabbit_holing)', () => {
+  assert.ok(CANDIDATE_SIGNALS.includes('missing_breadth'), 'missing_breadth must exist');
+  assert.ok(CANDIDATE_SIGNALS.includes('rabbit_holing'), 'rabbit_holing must exist');
+});
+
+test('SCHEMA: required fields include verdict_trajectory + candidate_signal', () => {
+  const required = SCHEMA.required;
+  assert.ok(required.includes('verdict_trajectory'));
+  assert.ok(required.includes('candidate_signal'));
+  assert.ok(required.includes('move'));
+  assert.ok(required.includes('difficulty'));
+  assert.ok(required.includes('momentum'));
+});
+
+/* --------------------------- Config gates ---------------------------- */
+
+test('config: v5 shape — 4 sections, no tradeoffs', () => {
+  const config = loadInterviewConfig();
+  const ids = config.sections.map((s) => s.id);
+  assert.deepEqual(ids, ['requirements', 'high_level_design', 'deep_dive', 'operations']);
+  assert.ok(!ids.includes('tradeoffs'), 'tradeoffs section must be dropped in v5');
+});
+
+test('config: required_breadth_components is a non-empty array (v5 NEW)', () => {
+  const config = loadInterviewConfig();
+  assert.ok(Array.isArray(config.required_breadth_components));
+  assert.ok(config.required_breadth_components.length > 0);
+});
+
+test('config: variant_scenarios is a non-empty array (v5 NEW)', () => {
+  const config = loadInterviewConfig();
+  assert.ok(Array.isArray(config.variant_scenarios));
+  assert.ok(config.variant_scenarios.length > 0);
+});
+
+test('config: deep_dive section carries deep_dive_topics (v5 NEW)', () => {
+  const config = loadInterviewConfig();
+  const dd = config.sections.find((s) => s.id === 'deep_dive');
+  assert.ok(dd, 'deep_dive section must exist');
+  assert.ok(Array.isArray(dd.deep_dive_topics));
+  assert.ok(dd.deep_dive_topics.length > 0);
+  for (const t of dd.deep_dive_topics) {
+    assert.ok(t.id && t.label && t.description && t.what_good_looks_like, `deep_dive_topic ${t.id || '?'} missing fields`);
+  }
+});
+
+test('config: every section has an exit_gate.require_any list with valid signal ids', () => {
   const config = loadInterviewConfig();
   for (const sec of config.sections) {
     assert.ok(sec.exit_gate, `section ${sec.id} must have an exit_gate`);
-    assert.ok(Array.isArray(sec.exit_gate.require_any) && sec.exit_gate.require_any.length > 0,
-      `section ${sec.id}.exit_gate.require_any must be a non-empty array`);
-    // Each gate signal id must exist in the section's signals[] list.
+    assert.ok(Array.isArray(sec.exit_gate.require_any) && sec.exit_gate.require_any.length > 0);
     const sectionSignalIds = new Set((sec.signals || []).map((s) => s.id));
     for (const sigId of sec.exit_gate.require_any) {
       assert.ok(sectionSignalIds.has(sigId),
@@ -89,918 +191,399 @@ test('config: every section has an exit_gate.require_any list (v4 FIX-2)', () =>
   }
 });
 
-test('SCHEMA: difficulty / momentum / bar_trajectory / time_status enums', () => {
-  assert.deepEqual(DIFFICULTIES, ['L1', 'L2', 'L3']);
-  assert.deepEqual(MOMENTUMS, ['hot', 'warm', 'cold']);
-  assert.deepEqual(BAR_TRAJECTORIES, ['rising', 'flat', 'falling']);
-  assert.deepEqual(TIME_STATUSES, ['on_track', 'behind', 'critical']);
-});
+/* --------------------------- buildPrompt smoke tests ---------------- */
 
-test('SCHEMA: required fields include v3 adaptive fields', () => {
-  const required = SCHEMA.required;
-  for (const f of [
-    'move',
-    'difficulty',
-    'recommended_section_focus_id',
-    'recommended_focus',
-    'momentum',
-    'bar_trajectory',
-    'performance_assessment',
-    'time_status',
-    'candidate_signal',
-    'interview_done',
-  ]) {
-    assert.ok(required.includes(f), `expected ${f} required`);
-  }
-});
-
-test('SCHEMA: flags is a flat array (no green/red split)', () => {
-  assert.equal(SCHEMA.properties.flags.type, 'array');
-  assert.deepEqual(SCHEMA.properties.flags.items.required, ['type', 'section_id', 'signal_id', 'note']);
-});
-
-test('SCHEMA: probe_observations carry probe + difficulty', () => {
-  assert.deepEqual(SCHEMA.properties.probe_observations.items.required, [
-    'observation',
-    'probe',
-    'section_id',
-    'difficulty',
-  ]);
-});
-
-/* --------------------------- deriveAnswerOnly ------------------------ */
-
-test('deriveAnswerOnly: ANSWER_AND_RELEASE → true', () => {
-  assert.equal(deriveAnswerOnly(baseCaptured({ move: 'ANSWER_AND_RELEASE' })), true);
-});
-
-test('deriveAnswerOnly: any other move → false', () => {
-  for (const m of ['LET_LEAD', 'GO_DEEPER', 'HAND_OFF', 'CLOSE']) {
-    assert.equal(deriveAnswerOnly(baseCaptured({ move: m })), false);
-  }
-});
-
-/* --------------------------- Interview completion -------------------- */
-
-/**
- * Seed every section with a green flag so the FIX-4 CLOSE gate sees
- * untouched.length === 0 and allows CLOSE to fire.
- */
-function makeFullyCoveredInterview(config) {
-  const interview = makeInterview();
-  interview.session_state = {
-    flags_by_section: Object.fromEntries(
-      config.sections.map((s) => [
-        s.id,
-        [{ type: 'green', signal_id: s.signals?.[0]?.id || 'placeholder', note: 'covered', at_turn: 1 }],
-      ])
-    ),
-  };
-  return interview;
-}
-
-test('applyEvalToSessionState honors captured.interview_done=true (all sections touched)', () => {
+test('buildPrompt renders v5 hard-rules / phases / pace / breadth / 45-min sections', () => {
   const config = loadInterviewConfig();
-  const interview = makeFullyCoveredInterview(config);
+  const interview = makeInterview();
+  const prompt = buildPrompt({
+    config,
+    interview,
+    sessionState: {},
+    candidateMessage: 'How many users?',
+    interviewerReply: '',
+  });
 
-  const r = applyEvalToSessionState(
+  // Phases.
+  assert.match(prompt, /Phase 0 — Introduction/);
+  assert.match(prompt, /Phase 1 — Requirements/);
+  assert.match(prompt, /Phase 2 — High Level Design/);
+  assert.match(prompt, /Phase 3 — Deep Dive/);
+  assert.match(prompt, /Phase 4 — Wrap/);
+
+  // 45-min rule.
+  assert.match(prompt, /Never wrap before 45 minutes/);
+  assert.match(prompt, /CLOSE is ONLY valid when wall clock >= 45 minutes/);
+  assert.match(prompt, /45-MIN GATE:\s*open/);
+
+  // Requirements Contract.
+  assert.match(prompt, /Requirements Contract/);
+  assert.match(prompt, /immutable for the session/);
+
+  // Breadth.
+  assert.match(prompt, /BREADTH COVERAGE:/);
+  assert.match(prompt, /breadth_coverage/);
+  assert.match(prompt, /Breadth vs\. Depth Discipline/);
+
+  // Pace.
+  assert.match(prompt, /Response Pace Calibration/);
+  assert.match(prompt, /response_pace/);
+
+  // Verdict framework.
+  assert.match(prompt, /Verdict Framework/);
+  assert.match(prompt, /VERDICT TRAJECTORY:/);
+
+  // Move catalog with v5 new moves.
+  assert.match(prompt, /NUDGE_BREADTH/);
+  assert.match(prompt, /INJECT_VARIANT/);
+});
+
+test('buildPrompt INTERVIEW CONFIG block includes required_breadth_components and variant_scenarios', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  const prompt = buildPrompt({
+    config,
+    interview,
+    sessionState: {},
+    candidateMessage: '',
+    interviewerReply: '',
+  });
+  assert.match(prompt, /required_breadth_components/);
+  assert.match(prompt, /variant_scenarios/);
+});
+
+test('buildPrompt requirements contract block reflects substrate state', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  const sessionState = {
+    requirements_contract: {
+      locked: true,
+      functional: ['shorten URLs', 'redirect on hit'],
+      non_functional: ['p99 < 50ms redirect'],
+      in_scope: ['custom slugs'],
+      out_of_scope: ['user accounts'],
+      locked_at_turn: 5,
+    },
+  };
+  const prompt = buildPrompt({
+    config,
+    interview,
+    sessionState,
+    candidateMessage: '',
+    interviewerReply: '',
+  });
+  assert.match(prompt, /Locked: true \(at turn 5\) — IMMUTABLE for the rest of the session/);
+  assert.match(prompt, /Functional:\s+shorten URLs; redirect on hit/);
+  assert.match(prompt, /Non-functional:\s+p99 < 50ms redirect/);
+});
+
+test('buildPrompt 45-MIN GATE flips to PASSED after 45 minutes', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview({
+    session_started_at: new Date(Date.now() - 46 * 60_000),
+  });
+  const prompt = buildPrompt({
+    config,
+    interview,
+    sessionState: {},
+    candidateMessage: '',
+    interviewerReply: '',
+  });
+  assert.match(prompt, /45-MIN GATE:\s*PASSED/);
+});
+
+test('buildPrompt FOCUS RUBRIC for deep_dive renders deep_dive_topics', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  const prompt = buildPrompt({
+    config,
+    interview,
+    sessionState: {
+      next_directive: { recommended_section_focus_id: 'deep_dive' },
+    },
+    candidateMessage: '',
+    interviewerReply: '',
+  });
+  assert.match(prompt, /Deep-dive topics/);
+  assert.match(prompt, /id_generation/);
+  assert.match(prompt, /redirect_critical_path/);
+});
+
+/* --------------------------- deriveAnswerOnly ----------------------- */
+
+test('deriveAnswerOnly true only for ANSWER_AND_RELEASE', () => {
+  assert.equal(deriveAnswerOnly(baseCaptured({ move: 'ANSWER_AND_RELEASE' })), true);
+  assert.equal(deriveAnswerOnly(baseCaptured({ move: 'GO_DEEPER' })), false);
+  assert.equal(deriveAnswerOnly(baseCaptured({ move: 'LET_LEAD' })), false);
+});
+
+/* --------------------------- applyEvalToSessionState: contract ------ */
+
+test('applyEvalToSessionState: stores contract on first lock; locked_at_turn defaults to candidateTurnIndex', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  applyEvalToSessionState(
     interview,
     baseCaptured({
-      move: 'CLOSE',
-      candidate_signal: 'block_complete',
-      interview_done: true,
+      move: 'HAND_OFF',
+      requirements_contract: {
+        locked: true,
+        functional: ['shorten URLs'],
+        non_functional: ['p99 redirect'],
+        in_scope: ['custom slugs'],
+        out_of_scope: ['user auth'],
+        locked_at_turn: null,
+      },
+      recommended_section_focus_id: 'requirements',
     }),
-    { config, candidateMessage: "I think we're done.", candidateTurnIndex: 1 }
+    { config, candidateTurnIndex: 4 }
+  );
+  const c = interview.session_state.requirements_contract;
+  assert.equal(c.locked, true);
+  assert.deepEqual(c.functional, ['shorten URLs']);
+  assert.equal(c.locked_at_turn, 4, 'locked_at_turn defaults to candidateTurnIndex when null');
+});
+
+test('applyEvalToSessionState: contract is immutable once locked — second lock is refused', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  applyEvalToSessionState(
+    interview,
+    baseCaptured({
+      requirements_contract: {
+        locked: true,
+        functional: ['original functional'],
+        non_functional: [],
+        in_scope: [],
+        out_of_scope: [],
+        locked_at_turn: 4,
+      },
+      recommended_section_focus_id: 'requirements',
+    }),
+    { config, candidateTurnIndex: 4 }
   );
 
-  assert.equal(r.interviewDone, true);
+  applyEvalToSessionState(
+    interview,
+    baseCaptured({
+      requirements_contract: {
+        locked: true,
+        functional: ['REWRITTEN'],
+        non_functional: [],
+        in_scope: [],
+        out_of_scope: [],
+        locked_at_turn: 9,
+      },
+      recommended_section_focus_id: 'high_level_design',
+    }),
+    { config, candidateTurnIndex: 9 }
+  );
+
+  assert.deepEqual(interview.session_state.requirements_contract.functional, ['original functional']);
+  assert.equal(interview.session_state.requirements_contract.locked_at_turn, 4);
+});
+
+test('applyEvalToSessionState: stores proposed (unlocked) contract snapshot for visibility', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  applyEvalToSessionState(
+    interview,
+    baseCaptured({
+      requirements_contract: {
+        locked: false,
+        functional: ['shorten URLs (proposed)'],
+        non_functional: [],
+        in_scope: [],
+        out_of_scope: [],
+        locked_at_turn: null,
+      },
+      recommended_section_focus_id: 'requirements',
+    }),
+    { config, candidateTurnIndex: 2 }
+  );
+  const c = interview.session_state.requirements_contract;
+  assert.equal(c.locked, false);
+  assert.deepEqual(c.functional, ['shorten URLs (proposed)']);
+});
+
+/* --------------------------- breadth_coverage / pace / verdict ---- */
+
+test('applyEvalToSessionState: persists breadth_coverage / response_pace / verdict_trajectory', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  applyEvalToSessionState(
+    interview,
+    baseCaptured({
+      breadth_coverage: {
+        components_mentioned: ['write_api', 'redirect_service'],
+        components_missing: ['caching_layer', 'id_generation'],
+      },
+      response_pace: 'suspiciously_fast',
+      pace_turns_tracked: 2,
+      verdict_trajectory: 'hire',
+      recommended_section_focus_id: 'high_level_design',
+    }),
+    { config, candidateTurnIndex: 6 }
+  );
+  assert.deepEqual(interview.session_state.breadth_coverage.components_mentioned, ['write_api', 'redirect_service']);
+  assert.deepEqual(interview.session_state.breadth_coverage.components_missing, ['caching_layer', 'id_generation']);
+  assert.equal(interview.session_state.response_pace, 'suspiciously_fast');
+  assert.equal(interview.session_state.pace_turns_tracked, 2);
+  assert.equal(interview.session_state.verdict_trajectory, 'hire');
+});
+
+/* --------------------------- 45-min CLOSE floor backstop ------------ */
+
+test('applyEvalToSessionState: CLOSE before 45 min downgrades to HAND_OFF (priority untouched section)', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview({
+    session_started_at: new Date(Date.now() - 20 * 60_000),
+    session_state: {
+      flags_by_section: {
+        requirements: [{ type: 'green', signal_id: 'nfr_awareness', note: 'ok', at_turn: 3 }],
+        high_level_design: [{ type: 'green', signal_id: 'caching_placement', note: 'ok', at_turn: 8 }],
+      },
+    },
+  });
+  const captured = baseCaptured({
+    move: 'CLOSE',
+    interview_done: true,
+    recommended_section_focus_id: 'high_level_design',
+  });
+  const { interviewDone } = applyEvalToSessionState(interview, captured, {
+    config,
+    candidateTurnIndex: 12,
+  });
+
+  assert.equal(captured.move, 'HAND_OFF', 'CLOSE before 45m must downgrade to HAND_OFF');
+  assert.equal(captured.interview_done, false);
+  assert.equal(interviewDone, false);
+
+  // deep_dive is the highest-priority untouched section.
+  assert.equal(captured.recommended_section_focus_id, 'deep_dive');
+
+  const lastEval = interview.session_state.eval_history[interview.session_state.eval_history.length - 1];
+  assert.equal(lastEval.close_blocked_reason, 'wall_clock_below_45m');
+});
+
+test('applyEvalToSessionState: CLOSE after 45m + all sections touched is allowed', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview({
+    session_started_at: new Date(Date.now() - 47 * 60_000),
+    session_state: {
+      flags_by_section: {
+        requirements: [{ type: 'green', signal_id: 'nfr_awareness', note: 'ok', at_turn: 3 }],
+        high_level_design: [{ type: 'green', signal_id: 'caching_placement', note: 'ok', at_turn: 8 }],
+        deep_dive: [{ type: 'green', signal_id: 'id_strategy', note: 'ok', at_turn: 14 }],
+        operations: [{ type: 'green', signal_id: 'slo_defined', note: 'ok', at_turn: 22 }],
+      },
+    },
+  });
+  const captured = baseCaptured({
+    move: 'CLOSE',
+    interview_done: true,
+    recommended_section_focus_id: 'operations',
+  });
+  const { interviewDone } = applyEvalToSessionState(interview, captured, {
+    config,
+    candidateTurnIndex: 25,
+  });
+  assert.equal(captured.move, 'CLOSE');
+  assert.equal(interviewDone, true);
   assert.equal(interview.session_state.interview_done, true);
 });
 
-test('applyEvalToSessionState honors move=CLOSE as completion (all sections touched)', () => {
-  const config = loadInterviewConfig();
-  const interview = makeFullyCoveredInterview(config);
+/* --------------------------- Untouched-section helpers --------------- */
 
-  const r = applyEvalToSessionState(
-    interview,
-    baseCaptured({ move: 'CLOSE', candidate_signal: 'block_complete' }),
-    { config, candidateMessage: 'wrap', candidateTurnIndex: 1 }
-  );
-
-  assert.equal(r.interviewDone, true);
+test('UNTOUCHED_PRIORITY excludes tradeoffs in v5', () => {
+  assert.deepEqual(UNTOUCHED_PRIORITY, ['deep_dive', 'operations', 'high_level_design', 'requirements']);
+  assert.ok(!UNTOUCHED_PRIORITY.includes('tradeoffs'));
 });
 
-/* --------------------------- FIX-4 CLOSE gate ------------------------ */
-
-test('FIX-4: CLOSE blocked when sections are untouched and time > 3m → downgraded to HAND_OFF', () => {
+test('listUntouchedSections / pickPriorityUntouchedSection: picks deep_dive over operations', () => {
   const config = loadInterviewConfig();
-  const interview = makeInterview(); // all sections untouched, 50m remaining
+  const sessionState = {
+    flags_by_section: {
+      requirements: [{ type: 'green', signal_id: 'nfr_awareness', note: 'x', at_turn: 1 }],
+    },
+  };
+  const untouched = listUntouchedSections(config.sections, sessionState);
+  const ids = untouched.map((s) => s.id);
+  assert.ok(ids.includes('high_level_design'));
+  assert.ok(ids.includes('deep_dive'));
+  assert.ok(ids.includes('operations'));
+  assert.ok(!ids.includes('requirements'));
 
-  const r = applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      move: 'CLOSE',
-      candidate_signal: 'block_complete',
-      interview_done: true,
-    }),
-    { config, candidateMessage: 'I think we are done.', candidateTurnIndex: 1 }
-  );
-
-  assert.equal(r.interviewDone, false, 'CLOSE must be blocked');
-  assert.equal(interview.session_state.interview_done, undefined);
-  const d = interview.session_state.next_directive;
-  assert.equal(d.move, 'HAND_OFF', 'CLOSE must be rewritten to HAND_OFF');
-  // Priority order: deep_dive > operations > tradeoffs > high_level_design > requirements.
-  // First untouched in priority order should be deep_dive.
-  assert.equal(d.recommended_section_focus_id, 'deep_dive');
-  const last = interview.session_state.eval_history.slice(-1)[0];
-  assert.equal(last.close_blocked_reason, 'untouched_sections_with_time');
+  const priority = pickPriorityUntouchedSection(untouched);
+  assert.equal(priority.id, 'deep_dive');
 });
 
-test('FIX-4: CLOSE allowed when all sections touched even if time remains', () => {
+/* --------------------------- Probe queue v5 (probe_type) ------------ */
+
+test('applyEvalToSessionState: probe_observations carry probe_type into the queue', () => {
   const config = loadInterviewConfig();
-  const interview = makeFullyCoveredInterview(config);
-
-  const r = applyEvalToSessionState(
-    interview,
-    baseCaptured({ move: 'CLOSE', candidate_signal: 'block_complete', interview_done: true }),
-    { config, candidateMessage: 'we are done', candidateTurnIndex: 1 }
-  );
-
-  assert.equal(r.interviewDone, true);
-  const last = interview.session_state.eval_history.slice(-1)[0];
-  assert.equal(last.close_blocked_reason, null);
-});
-
-test('FIX-4: CLOSE allowed when wall clock has < 3 minutes left even if some untouched', () => {
-  const config = loadInterviewConfig();
-  const interview = makeInterview();
-  // Backdate session start so only ~2 minutes remain in a 50-minute interview.
-  interview.session_started_at = new Date(Date.now() - (config.total_minutes - 2) * 60_000);
-
-  const r = applyEvalToSessionState(
-    interview,
-    baseCaptured({ move: 'CLOSE', candidate_signal: 'block_complete', interview_done: true }),
-    { config, candidateMessage: 'time up', candidateTurnIndex: 1 }
-  );
-
-  assert.equal(r.interviewDone, true);
-});
-
-/* --------------------------- Section_id routing ---------------------- */
-
-test('green flag with section_id routes to flags_by_section[that_id]', () => {
-  const config = loadInterviewConfig();
-  const targetSectionId = config.sections[2].id;
-
   const interview = makeInterview();
   applyEvalToSessionState(
     interview,
     baseCaptured({
-      recommended_section_focus_id: config.sections[0].id,
-      flags: [
-        {
-          type: 'green',
-          section_id: targetSectionId,
-          signal_id: 'id_strategy',
-          note: 'unprompted: snowflake-style allocator with rationale',
-        },
-      ],
-    }),
-    { config, candidateMessage: 'lots of stuff', candidateTurnIndex: 1 }
-  );
-
-  const flags = interview.session_state.flags_by_section?.[targetSectionId];
-  assert.ok(flags && flags.length === 1, 'flag should land in tagged section');
-  assert.equal(flags[0].type, 'green');
-  assert.equal(flags[0].signal_id, 'id_strategy');
-});
-
-test('flag without section_id falls back to recommended_section_focus_id', () => {
-  const config = loadInterviewConfig();
-  const focusId = config.sections[1].id;
-
-  const interview = makeInterview();
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      recommended_section_focus_id: focusId,
-      flags: [
-        { type: 'green', section_id: '', signal_id: 'storage_justification', note: 'fallback' },
-      ],
-    }),
-    { config, candidateMessage: 'driving', candidateTurnIndex: 1 }
-  );
-
-  const flags = interview.session_state.flags_by_section?.[focusId];
-  assert.ok(flags && flags.length === 1, 'flag should fall back to recommended_section_focus_id');
-  assert.equal(flags[0].signal_id, 'storage_justification');
-});
-
-test('probe_observation with section_id routes to probe_queue[that_id]', () => {
-  const config = loadInterviewConfig();
-  const targetSectionId = config.sections[2].id;
-
-  const interview = makeInterview();
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      recommended_section_focus_id: config.sections[0].id,
       probe_observations: [
         {
-          observation: 'first-write-wins for slug collision',
-          probe: 'How does first-write-wins behave under concurrent custom slug requests?',
-          section_id: targetSectionId,
+          observation: 'mentioned cache TTL',
+          probe: 'how does the TTL behave under expiry?',
+          section_id: 'high_level_design',
           difficulty: 'L2',
+          probe_type: 'depth',
         },
-      ],
-    }),
-    { config, candidateMessage: 'I will use first-write-wins.', candidateTurnIndex: 3 }
-  );
-
-  const queue = interview.session_state.probe_queue?.[targetSectionId];
-  assert.ok(queue && queue.length === 1);
-  assert.match(queue[0].observation, /first-write-wins/);
-  assert.match(queue[0].probe, /How does first-write-wins/);
-  assert.equal(queue[0].difficulty, 'L2');
-  assert.equal(queue[0].consumed, false);
-});
-
-/* --------------------------- Probe queue lifecycle ------------------- */
-
-test('consuming a probe mirrors `probe` (not observation) into focus', () => {
-  const config = loadInterviewConfig();
-  const otherSectionId = config.sections[2].id;
-  const interview = makeInterview();
-  interview.session_state = {
-    probe_queue: {
-      [otherSectionId]: [
         {
-          id: 'pq_2_0',
-          observation: 'they used first-write-wins for custom slug collision',
-          probe: 'What happens to second writer on collision?',
-          difficulty: 'L2',
-          added_at_turn: 2,
-          consumed: false,
-          consumed_at_turn: null,
+          observation: 'has not raised analytics',
+          probe: 'what else does this system need before we go deeper?',
+          section_id: 'high_level_design',
+          difficulty: 'L1',
+          probe_type: 'breadth',
         },
       ],
-    },
-    last_turn_ts: Date.now(),
-  };
-
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      move: 'HAND_OFF',
-      recommended_focus: '',
-      recommended_section_focus_id: otherSectionId,
-      candidate_signal: 'block_complete',
-      consumed_probe_id: 'pq_2_0',
+      recommended_section_focus_id: 'high_level_design',
     }),
-    { config, candidateMessage: "I'm good with these.", candidateTurnIndex: 3 }
+    { config, candidateTurnIndex: 5 }
   );
-
-  const item = interview.session_state.probe_queue[otherSectionId][0];
-  assert.equal(item.consumed, true);
-  assert.equal(item.consumed_at_turn, 3);
-  assert.match(
-    interview.session_state.next_directive.recommended_focus,
-    /What happens to second writer/
-  );
+  const queue = interview.session_state.probe_queue.high_level_design;
+  assert.equal(queue.length, 2);
+  assert.equal(queue[0].probe_type, 'depth');
+  assert.equal(queue[1].probe_type, 'breadth');
 });
 
-test('invalid consumed_probe_id is a no-op', () => {
+/* --------------------------- eval_history audit row ----------------- */
+
+test('applyEvalToSessionState: eval_history captures v5 fields', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview();
-
   applyEvalToSessionState(
     interview,
     baseCaptured({
-      move: 'HAND_OFF',
-      recommended_focus: 'a generic focus',
-      recommended_section_focus_id: config.sections[0].id,
-      candidate_signal: 'block_complete',
-      consumed_probe_id: 'pq_999_0',
-    }),
-    { config, candidateMessage: 'ok', candidateTurnIndex: 3 }
-  );
-
-  assert.equal(
-    interview.session_state.next_directive.recommended_focus,
-    'a generic focus'
-  );
-});
-
-/* --------------------------- Section time tracking ------------------- */
-
-test('section_minutes_used accumulates against the PRIOR focus section', async () => {
-  const config = loadInterviewConfig();
-  const focusA = config.sections[0].id;
-  const focusB = config.sections[1].id;
-  const interview = makeInterview();
-  // Seed with prior directive on focusA and last_turn_ts in the past.
-  interview.session_state = {
-    next_directive: { recommended_section_focus_id: focusA },
-    last_turn_ts: Date.now() - 90_000, // 1.5 minutes ago
-  };
-
-  // This turn the Planner moves to focusB. Time delta should land on focusA.
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      move: 'HAND_OFF',
-      recommended_section_focus_id: focusB,
-    }),
-    { config, candidateMessage: 'transitioning', candidateTurnIndex: 1 }
-  );
-
-  const sectionMinutesUsed = interview.session_state.section_minutes_used || {};
-  assert.ok(sectionMinutesUsed[focusA] >= 1.4 && sectionMinutesUsed[focusA] <= 1.6,
-    `expected ~1.5m for focusA, got ${sectionMinutesUsed[focusA]}`);
-  assert.equal(sectionMinutesUsed[focusB], undefined);
-});
-
-/* --------------------------- Performance routing --------------------- */
-
-test('performance_by_section is updated for substantive turns only', () => {
-  const config = loadInterviewConfig();
-  const focusId = config.sections[1].id;
-  const interview = makeInterview();
-
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      recommended_section_focus_id: focusId,
-      performance_assessment: 'above_target',
-    }),
-    { config, candidateMessage: 'good content', candidateTurnIndex: 1 }
-  );
-
-  assert.equal(interview.session_state.performance_by_section[focusId], 'above_target');
-
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      recommended_section_focus_id: focusId,
-      performance_assessment: 'unclear',
-    }),
-    { config, candidateMessage: 'ok', candidateTurnIndex: 2 }
-  );
-
-  // Unclear should NOT overwrite the above_target signal.
-  assert.equal(interview.session_state.performance_by_section[focusId], 'above_target');
-});
-
-/* --------------------------- next_directive persistence -------------- */
-
-test('next_directive carries v3 fields including momentum / difficulty / time_status', () => {
-  const config = loadInterviewConfig();
-  const interview = makeInterview();
-  const focusId = config.sections[0].id;
-
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      move: 'GO_DEEPER',
-      difficulty: 'L3',
-      recommended_focus: 'walk me through the slug collision math',
-      recommended_section_focus_id: focusId,
-      momentum: 'hot',
-      bar_trajectory: 'rising',
-      time_status: 'on_track',
-      candidate_signal: 'driving',
-    }),
-    { config, candidateMessage: 'lots of design content', candidateTurnIndex: 1 }
-  );
-
-  const d = interview.session_state.next_directive;
-  assert.ok(d);
-  assert.equal(d.move, 'GO_DEEPER');
-  assert.equal(d.difficulty, 'L3');
-  assert.equal(d.momentum, 'hot');
-  assert.equal(d.bar_trajectory, 'rising');
-  assert.equal(d.time_status, 'on_track');
-  assert.equal(d.recommended_section_focus_id, focusId);
-  assert.equal(d.answer_only, false);
-});
-
-test('next_directive persists current_subtopic + consecutive_probes_on_subtopic (FIX-1)', () => {
-  const config = loadInterviewConfig();
-  const interview = makeInterview();
-
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      move: 'GO_DEEPER',
-      recommended_section_focus_id: config.sections[2].id,
-      current_subtopic: 'shard key selection',
-      consecutive_probes_on_subtopic: 2,
-    }),
-    { config, candidateMessage: 'I would shard by hash', candidateTurnIndex: 1 }
-  );
-
-  const d = interview.session_state.next_directive;
-  assert.equal(d.current_subtopic, 'shard key selection');
-  assert.equal(d.consecutive_probes_on_subtopic, 2);
-
-  const last = interview.session_state.eval_history.slice(-1)[0];
-  assert.equal(last.current_subtopic, 'shard key selection');
-  assert.equal(last.consecutive_probes_on_subtopic, 2);
-});
-
-test('answer_only is true when move=ANSWER_AND_RELEASE', () => {
-  const config = loadInterviewConfig();
-  const interview = makeInterview();
-
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      move: 'ANSWER_AND_RELEASE',
-      recommended_section_focus_id: config.sections[0].id,
-      candidate_signal: 'asked_question',
-    }),
-    { config, candidateMessage: 'are detailed click analytics in scope?', candidateTurnIndex: 1 }
-  );
-
-  assert.equal(interview.session_state.next_directive.answer_only, true);
-});
-
-/* --------------------------- Leak guard ------------------------------ */
-
-test('focusLooksLikeRubricLeak flags focus that paraphrases a section good_signal', () => {
-  const rubric = ['Identifies p99 redirect latency as the dominant SLO unprompted'];
-  const focus = 'establishes p99 redirect latency as the dominant SLO target';
-  const m = focusLooksLikeRubricLeak(focus, rubric);
-  assert.ok(m, 'leaky focus should be flagged');
-});
-
-test('focusLooksLikeRubricLeak does NOT flag candidate-anchored focuses', () => {
-  const rubric = ['Identifies p99 redirect latency as the dominant SLO unprompted'];
-  const focus = 'they sketched an API gateway with no arrows';
-  assert.equal(focusLooksLikeRubricLeak(focus, rubric), null);
-});
-
-test('applyEvalToSessionState BLANKS the focus when leak guard fires (move untouched)', () => {
-  const config = loadInterviewConfig();
-  const interview = makeInterview();
-  // Pull the actual rubric string from the config for a real test.
-  const goodSignal = config.sections[0].good_signals[1]; // p99 redirect SLO
-
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      move: 'HAND_OFF',
-      recommended_focus: goodSignal,
-      recommended_section_focus_id: config.sections[0].id,
-    }),
-    { config, candidateMessage: 'lots of stuff', candidateTurnIndex: 1 }
-  );
-
-  assert.equal(interview.session_state.next_directive.move, 'HAND_OFF');
-  assert.equal(interview.session_state.next_directive.recommended_focus, '');
-});
-
-test('applyEvalToSessionState leaves a candidate-anchored focus untouched', () => {
-  const config = loadInterviewConfig();
-  const interview = makeInterview();
-
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      move: 'HAND_OFF',
-      recommended_focus: 'they sketched an API gateway with no arrows',
-      recommended_section_focus_id: config.sections[0].id,
-    }),
-    { config, candidateMessage: 'lots of stuff', candidateTurnIndex: 1 }
-  );
-
-  assert.equal(
-    interview.session_state.next_directive.recommended_focus,
-    'they sketched an API gateway with no arrows'
-  );
-});
-
-/* --------------------------- Validator ------------------------------- */
-
-test('validateExecutorReply: clean LET_LEAD reply produces no flags', () => {
-  const r = validateExecutorReply({
-    reply: 'Mhm.',
-    derivedMove: 'LET_LEAD',
-    candidateMessage: 'I am working through requirements.',
-  });
-  assert.deepEqual(r.flags, []);
-});
-
-test('validateExecutorReply: WRAP_TOPIC reply with ? gets executor_wrap_with_probe', () => {
-  const r = validateExecutorReply({
-    reply: 'Let us bookmark and move on. What do you want to focus on next?',
-    derivedMove: 'WRAP_TOPIC',
-    candidateMessage: 'still talking',
-  });
-  assert.ok(r.flags.some((f) => /executor_wrap_with_probe/.test(f)));
-});
-
-test('validateExecutorReply: HAND_OFF reply with 2+ ? gets executor_handoff_multi_probe', () => {
-  const r = validateExecutorReply({
-    reply: 'Anything else? What about caching?',
-    derivedMove: 'HAND_OFF',
-    candidateMessage: "I'm good",
-  });
-  assert.ok(r.flags.some((f) => /executor_handoff_multi_probe/.test(f)));
-});
-
-test('validateExecutorReply: 8+ word verbatim echo is flagged', () => {
-  const r = validateExecutorReply({
-    reply:
-      "So your service looks up the original URL in the database and responds with a 302. How do you ensure performance?",
-    derivedMove: 'HAND_OFF',
-    candidateMessage:
-      'My service looks up the original URL in the database and responds with a 302 redirect.',
-  });
-  assert.ok(r.flags.some((f) => /executor_echoing/.test(f)));
-});
-
-/* --------------------------- buildPrompt structure ------------------- */
-
-test('buildPrompt renders v3 INTERVIEW CONFIG block with problem + scope + scale_facts', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /=== INTERVIEW CONFIG ===/);
-  assert.match(prompt, /URL Shortener/);
-  assert.match(prompt, /scale_facts/);
-  assert.match(prompt, /fault_scenarios/);
-  assert.match(prompt, /raise_stakes_prompts/);
-});
-
-test('buildPrompt renders RUNTIME STATE with WALL CLOCK, SECTION BUDGETS, MOMENTUM, BAR TRAJECTORY', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /=== RUNTIME STATE ===/);
-  assert.match(prompt, /WALL CLOCK/);
-  assert.match(prompt, /SECTION BUDGETS:/);
-  assert.match(prompt, /MOMENTUM/);
-  assert.match(prompt, /BAR TRAJECTORY/);
-});
-
-test('buildPrompt SECTION BUDGETS bucketing: on_track / behind / critical', () => {
-  const config = loadInterviewConfig();
-  const reqId = config.sections[0].id;
-  const reqBudget = config.sections[0].budget_minutes;
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {
-      section_minutes_used: {
-        [reqId]: reqBudget * 0.3, // on_track
-        [config.sections[1].id]: config.sections[1].budget_minutes * 0.85, // behind
-        [config.sections[2].id]: config.sections[2].budget_minutes * 1.2, // critical
+      verdict_trajectory: 'no_hire',
+      response_pace: 'slow',
+      pace_turns_tracked: 3,
+      breadth_coverage: {
+        components_mentioned: ['write_api'],
+        components_missing: ['caching_layer'],
       },
-    },
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /on_track/);
-  assert.match(prompt, /behind/);
-  assert.match(prompt, /critical/);
-});
-
-test('buildPrompt renders 13-move catalog and difficulty levels', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /MOVE CATALOG/);
-  for (const move of MOVES) {
-    assert.match(prompt, new RegExp(move), `expected ${move} in MOVE CATALOG`);
-  }
-  assert.match(prompt, /DIFFICULTY LEVELS/);
-  assert.match(prompt, /L1 — Baseline/);
-  assert.match(prompt, /L3 — Staff/);
-});
-
-test('buildPrompt renders ADAPTIVE DIFFICULTY SYSTEM with momentum table', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /ADAPTIVE DIFFICULTY SYSTEM/);
-  assert.match(prompt, /MOMENTUM CALCULATION/);
-  assert.match(prompt, /MOMENTUM → INTERVIEW SHAPE/);
-});
-
-test('buildPrompt renders v4 RUNTIME STATE additions: CURRENT SUBTOPIC, EXIT GATES, SECTIONS UNTOUCHED', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /CURRENT SUBTOPIC:/);
-  assert.match(prompt, /CONSECUTIVE PROBES ON IT:/);
-  assert.match(prompt, /HARD CAP 3/);
-  assert.match(prompt, /SECTION EXIT GATES/);
-  assert.match(prompt, /SECTIONS UNTOUCHED/);
-});
-
-test('buildPrompt CURRENT SUBTOPIC reflects prior next_directive values (FIX-1)', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {
-      next_directive: {
-        recommended_section_focus_id: config.sections[2].id,
-        current_subtopic: 'consistent hashing rebalancing',
-        consecutive_probes_on_subtopic: 3,
+      requirements_contract: {
+        locked: true,
+        functional: ['x'],
+        non_functional: ['y'],
+        in_scope: [],
+        out_of_scope: [],
+        locked_at_turn: 4,
       },
-    },
-    candidateMessage: 'still on caching',
-    interviewerReply: 'okay',
-  });
-  assert.match(prompt, /CURRENT SUBTOPIC:\s+consistent hashing rebalancing/);
-  assert.match(prompt, /CONSECUTIVE PROBES ON IT:\s+3/);
-});
-
-test('buildPrompt SECTION EXIT GATES marks passed/NOT_PASSED based on flags_by_section greens', () => {
-  const config = loadInterviewConfig();
-  // Drop a green for one of the requirements gate signals.
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {
-      flags_by_section: {
-        requirements: [
-          { type: 'green', signal_id: 'estimation', note: 'quantified', at_turn: 2 },
-        ],
-      },
-    },
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /requirements: gate=\[estimation, nfr_awareness, read_write_ratio\] — passed/);
-  assert.match(prompt, /high_level_design: gate=\[read_write_separation, caching_placement\] — NOT_PASSED/);
-});
-
-test('buildPrompt SECTIONS UNTOUCHED lists sections with no flags / probes / eval_history', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {
-      flags_by_section: { requirements: [{ type: 'green', signal_id: 'estimation', note: 'q', at_turn: 1 }] },
-    },
-    candidateMessage: 'hi',
-    interviewerReply: 'opening',
-  });
-  // requirements is touched; everything else is untouched.
-  assert.match(prompt, /SECTIONS UNTOUCHED.*\[high_level_design, deep_dive, tradeoffs, operations\]/);
-});
-
-test('buildPrompt renders the v4 policy blocks (THREAD DEPTH / EXIT GATES / SCALE-FACT / CLOSE GATE / I-DON\'T-KNOW)', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hi',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /THREAD DEPTH RULE \(FIX-1\)/);
-  assert.match(prompt, /EXIT GATES \(FIX-2\)/);
-  assert.match(prompt, /SCALE-FACT INJECTION CHECK \(FIX-3\)/);
-  assert.match(prompt, /CLOSE GATE \(FIX-4\)/);
-  assert.match(prompt, /"I DON'T KNOW" HANDLING \(FIX-5\)/);
-  // Priority order for untouched-section redirect must be present.
-  assert.match(prompt, /deep_dive > operations > tradeoffs > high_level_design > requirements/);
-});
-
-test('buildPrompt SIGNAL_CLASSIFICATION maps stuck → PIVOT_ANGLE / SALVAGE_AND_MOVE (v4 FIX-5)', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hi',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /stuck\s+— Repeating, circling, "I don't know"/);
-  assert.match(prompt, /PIVOT_ANGLE if section has other unprobed angles, else SALVAGE_AND_MOVE/);
-  assert.match(prompt, /META-QUESTIONS about the interview itself/);
-});
-
-test('buildPrompt HARD_PROHIBITIONS forbids early CLOSE, same-subtopic probe after stuck, and >3 same-subtopic probes', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hi',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /Issue CLOSE \/ interview_done=true when untouched sections remain/);
-  assert.match(prompt, /Follow candidate "I don't know" \/ stuck with another probe on the SAME/);
-  assert.match(prompt, /Probe the same subtopic more than 3 consecutive times/);
-  assert.match(prompt, /Issue CLOSE on a meta-question/);
-});
-
-test('buildPrompt renders TIME MANAGEMENT, BAR TRAJECTORY, DECISION ALGORITHM, HARD PROHIBITIONS', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /TIME MANAGEMENT SYSTEM/);
-  assert.match(prompt, /BAR TRAJECTORY SYSTEM/);
-  assert.match(prompt, /DECISION ALGORITHM/);
-  assert.match(prompt, /HARD PROHIBITIONS/);
-});
-
-test('buildPrompt carries the HAND_OFF GUARD subsection in DECISION ALGORITHM (extended for v4 FIX-1/FIX-2)', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /HAND_OFF GUARD/);
-  assert.match(prompt, /HAND_OFF fires ONLY if EXIT GATE passes/);
-  assert.match(prompt, /candidate_signal == block_complete/);
-  assert.match(prompt, /section time_status == critical/);
-  // FIX-1 thread depth as 4th trigger.
-  assert.match(prompt, /consecutive_probes_on_subtopic >= 3/);
-  // The within-section fallback is documented.
-  assert.match(prompt, /within-section move only/);
-});
-
-test('buildPrompt carries the transition-phrase prohibition in HARD PROHIBITIONS', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /Contain a section-transition phrase such as "walk me through \.\.\."/);
-  assert.match(prompt, /UNLESS move ∈ \{HAND_OFF, WRAP_TOPIC\}/);
-});
-
-test('buildPrompt tightens the asked_question → ANSWER_AND_RELEASE row with bundling/transition guards', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  // The row must specify exactly ONE fact, ONE dimension, and forbid transition phrases.
-  assert.match(prompt, /asked_question\s+→ ANSWER_AND_RELEASE/);
-  assert.match(prompt, /recommended_focus = exactly ONE fact/);
-  assert.match(prompt, /Never bundle\s+multiple scope dims/);
-  assert.match(prompt, /Never append a\s+transition phrase/);
-});
-
-test('buildPrompt renders FOCUS RUBRIC for the focus section only', () => {
-  const config = loadInterviewConfig();
-  const focusId = config.sections[1].id;
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: { next_directive: { recommended_section_focus_id: focusId } },
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, new RegExp(`FOCUS RUBRIC for "${focusId}"`));
-  // Other section ids should NOT have their own FOCUS RUBRIC blocks.
-  for (const sec of config.sections) {
-    if (sec.id !== focusId) {
-      assert.doesNotMatch(prompt, new RegExp(`FOCUS RUBRIC for "${sec.id}"`));
-    }
-  }
-});
-
-test('buildPrompt PROBE QUEUE renders items with section / difficulty / probe text', () => {
-  const config = loadInterviewConfig();
-  const sectionId = config.sections[0].id;
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {
-      probe_queue: {
-        [sectionId]: [
-          {
-            id: 'pq_2_0',
-            observation: 'first-write-wins',
-            probe: 'What happens on second writer for the same custom slug?',
-            difficulty: 'L3',
-            added_at_turn: 2,
-            consumed: false,
-          },
-        ],
-      },
-    },
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /PROBE QUEUE/);
-  assert.match(prompt, /pq_2_0/);
-  assert.match(prompt, /difficulty=L3/);
-  assert.match(prompt, /What happens on second writer/);
-});
-
-test('buildPrompt ACTIVE FLAGS renders green/red flags with signal_id and section_id', () => {
-  const config = loadInterviewConfig();
-  const sectionId = config.sections[1].id;
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {
-      flags_by_section: {
-        [sectionId]: [
-          { type: 'green', signal_id: 'caching_placement', note: 'CDN edge cache unprompted', at_turn: 3 },
-          { type: 'red', signal_id: 'storage_justification', note: 'no rationale', at_turn: 5 },
-        ],
-      },
-    },
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  assert.match(prompt, /ACTIVE FLAGS/);
-  assert.match(prompt, new RegExp(`GREEN \\[${sectionId}\\] caching_placement`));
-  assert.match(prompt, new RegExp(`RED \\[${sectionId}\\] storage_justification`));
-});
-
-test('buildPrompt renders v3 PERSONA-FREE blocks (no rubric_updates / coverage_evidence vocabulary)', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildPrompt({
-    config,
-    interview: makeInterview(),
-    sessionState: {},
-    candidateMessage: 'hello',
-    interviewerReply: 'opening',
-  });
-  // v2 fields should not appear in v3 prompt.
-  assert.doesNotMatch(prompt, /rubric_updates/);
-  assert.doesNotMatch(prompt, /coverage_evidence/);
-  assert.doesNotMatch(prompt, /signals\.\{strong/);
-});
-
-/* --------------------------- Audit trail ----------------------------- */
-
-test('eval_history captures move + difficulty + momentum + bar_trajectory + time_status', () => {
-  const config = loadInterviewConfig();
-  const interview = makeInterview();
-
-  applyEvalToSessionState(
-    interview,
-    baseCaptured({
-      move: 'GO_DEEPER',
-      difficulty: 'L3',
-      momentum: 'hot',
-      bar_trajectory: 'rising',
-      time_status: 'behind',
-      recommended_section_focus_id: config.sections[2].id,
-      performance_assessment: 'above_target',
-      candidate_signal: 'driving',
+      recommended_section_focus_id: 'high_level_design',
     }),
-    { config, candidateMessage: 'deep dive content', candidateTurnIndex: 5 }
+    { config, candidateTurnIndex: 4 }
   );
-
-  const last = interview.session_state.eval_history.slice(-1)[0];
-  assert.equal(last.move, 'GO_DEEPER');
-  assert.equal(last.difficulty, 'L3');
-  assert.equal(last.momentum, 'hot');
-  assert.equal(last.bar_trajectory, 'rising');
-  assert.equal(last.time_status, 'behind');
-  assert.equal(last.performance_assessment, 'above_target');
-  assert.equal(last.recommended_section_focus_id, config.sections[2].id);
+  const last = interview.session_state.eval_history[0];
+  assert.equal(last.verdict_trajectory, 'no_hire');
+  assert.equal(last.response_pace, 'slow');
+  assert.equal(last.pace_turns_tracked, 3);
+  assert.equal(last.requirements_contract_locked_at_turn, 4);
+  assert.equal(last.contract_locked_this_turn, true);
+  assert.equal(last.breadth_components_missing_count, 1);
 });

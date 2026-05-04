@@ -15,7 +15,7 @@ function turnToMessage(turn) {
   return { role, content };
 }
 
-function windowedHistory(turns, maxMessages = 40) {
+function windowedHistory(turns, maxMessages = 60) {
   if (!Array.isArray(turns) || turns.length <= maxMessages) {
     return Array.isArray(turns) ? turns : [];
   }

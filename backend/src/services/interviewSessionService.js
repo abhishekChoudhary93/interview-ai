@@ -3,7 +3,6 @@ import { streamInterviewerReply, generateOpeningLine } from './interviewConverse
 import {
   captureTurnEval,
   applyEvalToSessionState,
-  validateExecutorReply,
 } from './interviewEvalCapture.js';
 
 /**
@@ -15,26 +14,35 @@ export const YEARS_EXPERIENCE_BANDS = ['0_2', '2_5', '5_8', '8_12', '12_plus'];
 /**
  * Hard turn cap. Beyond this we force a wrap regardless of bar judgment —
  * this is a safety net only. The Planner is responsible for getting the
- * interview to a clean close before this (via `interview_done=true`).
+ * interview to a clean close before this (via `interview_done=true` after
+ * the 45-minute floor).
  */
 const HARD_TURN_CAP = 60;
 
 /**
- * v3 Initial session_state shape. Section progression is no longer tracked —
- * the Planner directs all transitions verbally. We seed
- * `opening_phase='awaiting_ack'` to drive the conversational opening protocol
- * (intro → ack → problem handoff) deterministically before any Planner LLM call.
+ * v5 Initial session_state shape. Section progression is not tracked here —
+ * the Planner directs all transitions. We seed `opening_phase='awaiting_ack'`
+ * so the deterministic conversational opening line goes out before any LLM
+ * call.
  *
- * Persisted fields (v3):
+ * Persisted fields:
  *   opening_phase             — 'awaiting_ack' | 'in_progress'
- *   turn_count                — interviewer turn counter (safety cap)
+ *   turn_count                — interviewer turn counter (HARD_TURN_CAP safety)
  *   session_wall_start_ms     — ms timestamp; basis for total elapsed
  *   last_turn_ts              — ms timestamp of previous turn (per-section delta)
- *   eval_history[]            — every Planner emission: {turn_index, move, difficulty, momentum, bar_trajectory, time_status, recommended_section_focus_id, performance_assessment, ...}
- *   probe_queue               — { [sectionId]: [{id, observation, probe, difficulty, added_at_turn, consumed, consumed_at_turn}] }
+ *   eval_history[]            — every Planner emission (capped 80)
+ *   probe_queue               — { [sectionId]: [{id, observation, probe, probe_type, difficulty, added_at_turn, consumed, consumed_at_turn}] }
  *   flags_by_section          — { [sectionId]: [{type:'green'|'red', signal_id, note, at_turn}] }
  *   section_minutes_used      — { [sectionId]: minutes spent (advisory) }
  *   performance_by_section    — { [sectionId]: 'above_target'|'at_target'|'below_target' }
+ *
+ *   v5 NEW substrate fields:
+ *   requirements_contract     — null until Planner emits locked=true; immutable thereafter
+ *   breadth_coverage          — { components_mentioned[], components_missing[] } (snapshot)
+ *   response_pace             — 'fast'|'normal'|'slow'|'suspiciously_fast' (latest)
+ *   pace_turns_tracked        — integer; how many consecutive turns at this pace
+ *   verdict_trajectory        — 'strong_hire'|'hire'|'no_hire'|'strong_no_hire'|'insufficient_data'
+ *
  *   next_directive            — last-applied Planner directive; the Executor reads this
  *   interview_done            — terminal flag
  */
@@ -49,6 +57,13 @@ function buildInitialSessionState(now) {
     flags_by_section: {},
     section_minutes_used: {},
     performance_by_section: {},
+
+    requirements_contract: null,
+    breadth_coverage: { components_mentioned: [], components_missing: [] },
+    response_pace: null,
+    pace_turns_tracked: 0,
+    verdict_trajectory: 'insufficient_data',
+
     next_directive: null,
     interview_done: false,
   };
@@ -56,7 +71,7 @@ function buildInitialSessionState(now) {
 
 /**
  * Idempotent session start. If the interview already has an opening turn,
- * return that without re-priming. Otherwise: load the v3 config, snapshot it
+ * return that without re-priming. Otherwise: load the v5 config, snapshot it
  * onto `interview_config`, generate one opening line (deterministic intro —
  * no LLM call), and write it as the first `interviewer` turn.
  *
@@ -81,7 +96,7 @@ export async function startInterviewSession(interview) {
   const now = Date.now();
   interview.interview_config = config;
   interview.template_id = INTERVIEW_CONFIG_ID;
-  interview.template_version = 'v3';
+  interview.template_version = 'v5';
   interview.selected_template_id = INTERVIEW_CONFIG_ID;
   interview.session_state = buildInitialSessionState(now);
   interview.target_duration_minutes =
@@ -91,11 +106,6 @@ export async function startInterviewSession(interview) {
   interview.session_started_at = new Date(now);
   if (!Array.isArray(interview.conversation_turns)) interview.conversation_turns = [];
 
-  // Deterministic conversational intro — no problem statement yet, no LLM.
-  // From T1 onward the Executor LLM handles every turn; the OPENING PROTOCOL
-  // section of its system prompt carries the curated problem statement and
-  // tells the LLM how to handle ack-vs-substance on the candidate's first
-  // message.
   const openingText = await generateOpeningLine({ interview, config });
 
   interview.conversation_turns.push({ role: 'interviewer', content: openingText, kind: 'opening' });
@@ -174,20 +184,9 @@ export async function runBackgroundEvalCapture(
     interviewerReply,
   });
 
-  // Post-stream observability validator. Pure observability — no state
-  // self-heal; section transitions are now Planner-driven and verbal.
-  const validatorResult = validateExecutorReply({
-    reply: interviewerReply,
-    derivedMove: captured.move,
-    candidateMessage,
-  });
-
   const { interviewDone } = applyEvalToSessionState(interview, captured, {
     config,
-    candidateMessage,
     candidateTurnIndex,
-    interviewerReply,
-    validatorResult,
   });
 
   // Hard turn-cap safety net.

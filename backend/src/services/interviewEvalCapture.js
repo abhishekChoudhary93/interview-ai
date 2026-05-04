@@ -2,7 +2,7 @@ import { invokeLLM } from './llmInvoke.js';
 import { resolveOpenRouterModel } from '../config.js';
 
 /**
- * v3 Planner — per-turn JSON directive.
+ * v5 Planner — per-turn JSON directive.
  *
  * Architecture: LLM-led, app-as-data-layer, single-problem.
  *
@@ -10,19 +10,23 @@ import { resolveOpenRouterModel } from '../config.js';
  *     transitions. Sections are a structural plan in the injected
  *     interview_config. The application does not advance sections.
  *
- *   - Adaptive difficulty: every turn the Planner emits `difficulty`
- *     (L1/L2/L3), `momentum` (hot/warm/cold), `bar_trajectory`
- *     (rising/flat/falling), and `time_status` (on_track/behind/critical).
- *     These drive the Executor's delivery register and the move catalog.
+ *   - The Planner is the "mind of an experienced FAANG interviewer". It
+ *     emits a single JSON directive each turn carrying: move, difficulty,
+ *     focus, requirements_contract, breadth_coverage, response_pace,
+ *     verdict_trajectory, momentum, bar_trajectory, time_status, flags,
+ *     probe_observations, and interview_done.
  *
- *   - INJECT_FAULT and RAISE_STAKES draw from config.fault_scenarios and
- *     config.raise_stakes_prompts respectively — content-driven moves.
+ *   - INJECT_FAULT, RAISE_STAKES, INJECT_VARIANT draw from
+ *     config.fault_scenarios / raise_stakes_prompts / variant_scenarios
+ *     respectively — content-driven moves.
  *
- *   - The Planner emits `interview_done=true` directly when wrap is done.
+ *   - The Planner emits `interview_done=true` directly when wrap is done,
+ *     and only after the 45-minute floor has passed.
  *
- *   - JS substrate: schema validation, leak guard, persistence (probe_queue,
- *     flags_by_section, section_minutes_used, eval_history). No coverage
- *     gate, no rubric_updates persistence, no signal taxonomy.
+ *   - JS substrate: schema validation, persistence (probe_queue,
+ *     flags_by_section, section_minutes_used, eval_history, contract,
+ *     breadth_coverage, pace, verdict_trajectory). 45-minute CLOSE
+ *     backstop. No leak guard, no executor-reply validator.
  */
 
 /* --------------------------- Output schema ---------------------------- */
@@ -38,7 +42,9 @@ const MOVES = [
   'DRAW_NUMBERS',
   'INJECT_FAULT',
   'RAISE_STAKES',
-  // Lateral within section (v4 FIX-1)
+  'INJECT_VARIANT',
+  // Lateral / breadth
+  'NUDGE_BREADTH',
   'PIVOT_ANGLE',
   // Difficulty-down
   'NARROW_SCOPE',
@@ -55,8 +61,11 @@ const MOMENTUMS = ['hot', 'warm', 'cold'];
 const BAR_TRAJECTORIES = ['rising', 'flat', 'falling'];
 const TIME_STATUSES = ['on_track', 'behind', 'critical'];
 const PERFORMANCE_ASSESSMENTS = ['above_target', 'at_target', 'below_target', 'unclear'];
-const CANDIDATE_SIGNALS = ['driving', 'asked_question', 'block_complete', 'stuck', 'procedural'];
+const CANDIDATE_SIGNALS = ['driving', 'asked_question', 'block_complete', 'stuck', 'missing_breadth', 'rabbit_holing', 'procedural'];
 const FLAG_TYPES = ['green', 'red'];
+const RESPONSE_PACES = ['fast', 'normal', 'slow', 'suspiciously_fast'];
+const VERDICT_TRAJECTORIES = ['strong_hire', 'hire', 'no_hire', 'strong_no_hire', 'insufficient_data'];
+const PROBE_TYPES = ['breadth', 'depth'];
 
 const SCHEMA = {
   type: 'object',
@@ -71,7 +80,7 @@ const SCHEMA = {
     recommended_focus: {
       type: 'string',
       description:
-        'Candidate-facing question or transition phrase. Empty string for LET_LEAD. For ANSWER_AND_RELEASE, exactly the one fact from interview_config (no preamble). Treat as if the candidate will read it verbatim — never use rubric vocabulary they have not raised.',
+        'Candidate-facing question or transition phrase. Empty string for LET_LEAD. For ANSWER_AND_RELEASE, exactly the one fact from interview_config (no preamble, no follow-up). Treat as if the candidate will read it verbatim.',
     },
     consumed_probe_id: {
       type: 'string',
@@ -81,29 +90,69 @@ const SCHEMA = {
     current_subtopic: {
       type: 'string',
       description:
-        '3-5 word label for the sub-topic the latest probe is on (e.g. "consistent hashing rebalancing", "cache TTL strategy"). Used by the rabbit-hole guard. Empty string for LET_LEAD / ANSWER_AND_RELEASE / procedural.',
+        '3-5 word label for the sub-topic this turn probes (e.g. "consistent hashing rebalancing", "cache TTL strategy"). Used by the rabbit-hole guard. Empty string for LET_LEAD / ANSWER_AND_RELEASE / procedural.',
     },
     consecutive_probes_on_subtopic: {
       type: 'integer',
       description:
-        'How many consecutive turns have probed THIS same subtopic (including this turn). Reset to 0 on PIVOT_ANGLE / HAND_OFF / WRAP_TOPIC / CLOSE / move into a different signal area. Hard rule: must NOT exceed 3 — if it would, emit PIVOT_ANGLE instead.',
+        'How many consecutive turns have probed THIS same subtopic (including this turn). Reset to 0 on PIVOT_ANGLE / HAND_OFF / WRAP_TOPIC / CLOSE / move into a different signal area. Hard rule: must NOT exceed 3 — if it would, emit PIVOT_ANGLE.',
       minimum: 0,
     },
+
+    requirements_contract: {
+      type: 'object',
+      description:
+        'The locked requirements contract. Once locked=true, this is immutable for the session — first lock wins. Functional, NFR, in_scope, out_of_scope are agreed lists. locked_at_turn is the candidate-turn index when locking happened.',
+      properties: {
+        locked: { type: 'boolean' },
+        functional: { type: 'array', items: { type: 'string' } },
+        non_functional: { type: 'array', items: { type: 'string' } },
+        in_scope: { type: 'array', items: { type: 'string' } },
+        out_of_scope: { type: 'array', items: { type: 'string' } },
+        locked_at_turn: { type: ['integer', 'null'] },
+      },
+    },
+
+    breadth_coverage: {
+      type: 'object',
+      description:
+        'Snapshot of breadth coverage against config.required_breadth_components. Updated each turn as the candidate raises or omits components.',
+      properties: {
+        components_mentioned: { type: 'array', items: { type: 'string' } },
+        components_missing: { type: 'array', items: { type: 'string' } },
+      },
+    },
+
+    response_pace: {
+      type: 'string',
+      enum: RESPONSE_PACES,
+      description:
+        "fast | normal | slow | suspiciously_fast — the candidate's recent response pattern. suspiciously_fast for 2+ complex turns => INJECT_VARIANT. slow for 2+ turns => NARROW_SCOPE.",
+    },
+    pace_turns_tracked: {
+      type: 'integer',
+      description: 'How many consecutive turns at this pace.',
+      minimum: 0,
+    },
+
     probe_observations: {
       type: 'array',
       description:
-        "0-2 NEW probe-worthy observations from THIS turn — things worth asking about a future turn. Each MUST be tagged with the section_id it belongs to and carry a pre-formed candidate-facing question in `probe`.",
+        "0-2 NEW probe-worthy observations from THIS turn — things worth asking about a future turn. Each MUST be tagged with the section_id and probe_type (breadth | depth) and carry a pre-formed candidate-facing question in `probe`.",
       items: {
         type: 'object',
         properties: {
+          id: { type: 'string' },
           observation: { type: 'string' },
           probe: { type: 'string' },
           section_id: { type: 'string' },
           difficulty: { type: 'string', enum: DIFFICULTIES },
+          probe_type: { type: 'string', enum: PROBE_TYPES },
         },
         required: ['observation', 'probe', 'section_id', 'difficulty'],
       },
     },
+
     flags: {
       type: 'array',
       description:
@@ -119,9 +168,16 @@ const SCHEMA = {
         required: ['type', 'section_id', 'signal_id', 'note'],
       },
     },
+
     momentum: { type: 'string', enum: MOMENTUMS },
     bar_trajectory: { type: 'string', enum: BAR_TRAJECTORIES },
     performance_assessment: { type: 'string', enum: PERFORMANCE_ASSESSMENTS },
+    verdict_trajectory: {
+      type: 'string',
+      enum: VERDICT_TRAJECTORIES,
+      description:
+        'Running verdict picture, updated every substantive turn. strong_hire | hire | no_hire | strong_no_hire | insufficient_data. Insufficient_data only valid in early turns.',
+    },
     time_status: { type: 'string', enum: TIME_STATUSES },
     candidate_signal: { type: 'string', enum: CANDIDATE_SIGNALS },
     interview_done: { type: 'boolean' },
@@ -135,102 +191,12 @@ const SCHEMA = {
     'momentum',
     'bar_trajectory',
     'performance_assessment',
+    'verdict_trajectory',
     'time_status',
     'candidate_signal',
     'interview_done',
   ],
 };
-
-/* --------------------------- Helpers ---------------------------------- */
-
-function normalizeForFuzzyMatch(s) {
-  return String(s || '')
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/* --------------------------- Leak guard ------------------------------- */
-
-const LEAK_GUARD_STOPWORDS = new Set([
-  'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'from',
-  'is', 'are', 'be', 'was', 'were', 'has', 'have', 'had', 'do', 'does', 'did',
-  'what', 'how', 'why', 'when', 'where', 'who', 'which',
-  'your', 'you', 'their', 'them', 'they', 'it', 'its', 'this', 'that', 'these', 'those',
-  'can', 'could', 'would', 'should', 'will', 'shall',
-  'about', 'into', 'over', 'under', 'between', 'across',
-  'more', 'most', 'less', 'least',
-  'walk', 'explain', 'describe', 'tell', 'ask', 'asks',
-  'me', 'us', 'my', 'we', 'our',
-  'so', 'than', 'then', 'as', 'at', 'by', 'if',
-  'one', 'two', 'three',
-  'candidate', 'interviewer', 'section', 'design', 'system',
-]);
-
-function leakGuardStem(w) {
-  if (w.length <= 4) return w;
-  let stem = w;
-  for (const suf of ['ization', 'ational', 'ation', 'tions', 'tion', 'ates', 'ated', 'ate', 'ings', 'ing', 'ies', 'ied', 'edly', 'ed', 'ers', 'er', 'es', 's']) {
-    if (stem.length - suf.length >= 4 && stem.endsWith(suf)) {
-      stem = stem.slice(0, stem.length - suf.length);
-      break;
-    }
-  }
-  return stem.length > 5 ? stem.slice(0, 5) : stem;
-}
-
-function leakGuardTokens(s) {
-  return normalizeForFuzzyMatch(s)
-    .replace(/[^a-z0-9\s-]/g, ' ')
-    .split(/\s+/)
-    .filter((w) => w && w.length > 2 && !LEAK_GUARD_STOPWORDS.has(w))
-    .map(leakGuardStem);
-}
-
-/**
- * Detect when a string paraphrases a rubric line. Used to:
- *   1. Blank out a leaky `recommended_focus` (move stays — Planner's call).
- *   2. Flag an Executor reply that lifted rubric vocabulary (observability).
- *
- * Returns the matched rubric string, or null if no leak detected.
- */
-export function focusLooksLikeRubricLeak(focus, rubricStrings) {
-  if (!focus || !Array.isArray(rubricStrings) || rubricStrings.length === 0) {
-    return null;
-  }
-  const focusTokens = leakGuardTokens(focus);
-  if (focusTokens.length === 0) return null;
-  const focusSet = new Set(focusTokens);
-
-  for (const r of rubricStrings) {
-    const rTokens = leakGuardTokens(r);
-    if (rTokens.length === 0) continue;
-    let overlap = 0;
-    for (const t of rTokens) if (focusSet.has(t)) overlap += 1;
-    if (overlap >= 3) return r;
-    if (overlap / rTokens.length >= 0.6 && overlap >= 2) return r;
-  }
-  return null;
-}
-
-/**
- * Collect every rubric string the leak guard should scan against, derived
- * from the v3 config (good_signals + faang_bar of every section).
- */
-function collectRubricStringsFromConfig(config) {
-  const sections = Array.isArray(config?.sections) ? config.sections : [];
-  const out = [];
-  for (const s of sections) {
-    if (Array.isArray(s.good_signals)) out.push(...s.good_signals);
-    if (typeof s.faang_bar === 'string' && s.faang_bar) {
-      for (const part of s.faang_bar.split(/[.;,]/)) {
-        const t = part.trim();
-        if (t.length >= 8) out.push(t);
-      }
-    }
-  }
-  return out;
-}
 
 /* --------------------------- Section helpers ------------------------- */
 
@@ -258,8 +224,9 @@ function formatProbeQueueAcrossSections(probeQueue, sections) {
       .sort((a, b) => (b.added_at_turn || 0) - (a.added_at_turn || 0))
       .slice(0, 3);
     for (const p of sorted) {
+      const ptype = p.probe_type ? `${p.probe_type} ` : '';
       lines.push(
-        `  ${p.id} [${sec.id}] difficulty=${p.difficulty || 'L2'}: "${String(p.probe || p.observation || '').slice(0, 110)}"`
+        `  ${p.id} [${sec.id}] ${ptype}difficulty=${p.difficulty || 'L2'}: "${String(p.probe || p.observation || '').slice(0, 110)}"`
       );
     }
   }
@@ -322,7 +289,7 @@ function buildSectionScoreboard(sections, flagsBySection, probeQueue) {
   return lines.join('\n');
 }
 
-/* --------------------------- Section exit gates (FIX-2) -------------- */
+/* --------------------------- Section exit gates ---------------------- */
 
 function buildSectionExitGatesBlock(sections, flagsBySection) {
   const lines = [];
@@ -348,7 +315,7 @@ function buildSectionExitGatesBlock(sections, flagsBySection) {
   return lines.join('\n');
 }
 
-/* --------------------------- Untouched sections (FIX-4) -------------- */
+/* --------------------------- Untouched sections ---------------------- */
 
 function isSectionTouched(sec, sessionState) {
   const flags = Array.isArray(sessionState?.flags_by_section?.[sec.id])
@@ -367,9 +334,11 @@ function isSectionTouched(sec, sessionState) {
 }
 
 /**
- * v4 FIX-4 priority order for untouched-section redirect.
+ * Priority order for HAND_OFF redirect when CLOSE is blocked: deep_dive
+ * carries the most differentiated signal, operations is the next-most
+ * load-bearing for a senior bar.
  */
-const UNTOUCHED_PRIORITY = ['deep_dive', 'operations', 'tradeoffs', 'high_level_design', 'requirements'];
+const UNTOUCHED_PRIORITY = ['deep_dive', 'operations', 'high_level_design', 'requirements'];
 
 function listUntouchedSections(sections, sessionState) {
   return sections.filter((s) => !isSectionTouched(s, sessionState));
@@ -377,7 +346,6 @@ function listUntouchedSections(sections, sessionState) {
 
 function pickPriorityUntouchedSection(untouched) {
   if (!Array.isArray(untouched) || untouched.length === 0) return null;
-  // Prefer the v4 priority order; if multiple match, take the first.
   for (const id of UNTOUCHED_PRIORITY) {
     const hit = untouched.find((s) => s.id === id);
     if (hit) return hit;
@@ -419,308 +387,412 @@ function computeMomentumFromHistory(evalHistory) {
   return substantive;
 }
 
+/* --------------------------- Contract / Breadth blocks --------------- */
+
+function buildRequirementsContractBlock(contract) {
+  const c = contract || null;
+  if (!c || !c.locked) {
+    const lines = ['  Locked: false'];
+    if (c) {
+      if (Array.isArray(c.functional) && c.functional.length) {
+        lines.push(`  Functional (proposed): ${c.functional.join('; ')}`);
+      }
+      if (Array.isArray(c.non_functional) && c.non_functional.length) {
+        lines.push(`  Non-functional (proposed): ${c.non_functional.join('; ')}`);
+      }
+    }
+    lines.push('  (Lock the contract before HAND_OFF out of requirements. Special case: requirements exit gate requires at least one NFR.)');
+    return lines.join('\n');
+  }
+  const lines = [
+    `  Locked: true (at turn ${c.locked_at_turn ?? '?'}) — IMMUTABLE for the rest of the session`,
+    `  Functional:     ${(c.functional || []).join('; ') || '(none)'}`,
+    `  Non-functional: ${(c.non_functional || []).join('; ') || '(none)'}`,
+    `  In scope:       ${(c.in_scope || []).join('; ') || '(none)'}`,
+    `  Out of scope:   ${(c.out_of_scope || []).join('; ') || '(none)'}`,
+  ];
+  return lines.join('\n');
+}
+
+function buildBreadthCoverageBlock(config, breadthCoverage) {
+  const required = Array.isArray(config?.required_breadth_components)
+    ? config.required_breadth_components
+    : [];
+  const mentioned = Array.isArray(breadthCoverage?.components_mentioned)
+    ? breadthCoverage.components_mentioned
+    : [];
+  const missing = Array.isArray(breadthCoverage?.components_missing)
+    ? breadthCoverage.components_missing
+    : required.filter((c) => !mentioned.includes(c));
+  return [
+    `  Required (${required.length}): ${required.join(', ') || '(none defined)'}`,
+    `  Mentioned (${mentioned.length}): ${mentioned.join(', ') || '(none yet)'}`,
+    `  Missing  (${missing.length}): ${missing.join(', ') || '(none — full coverage)'}`,
+  ].join('\n');
+}
+
 /* --------------------------- Static prompt blocks -------------------- */
 
-const ROLE_BLOCK = `You are the Interview Planner. You are invisible to the candidate. You think like a principal engineer who has conducted 200+ system design loops. Every turn you make three decisions in this order:
-  1. Clock — am I on pace? does something need to be cut?
-  2. Momentum — how has this candidate been performing the last 3 turns? scale up or down?
-  3. Move — what is the exact right question to ask right now, at the right difficulty level?
+const ROLE_BLOCK = `# What You Are
+
+You are the **mind of an experienced FAANG interviewer** — the internal reasoning layer that decides what happens next. You have run 200+ system design loops. You know what good looks like at every level. You are not a rubric checker. You are a calibration engine whose job is to collect as many high-quality green and red signals as possible before time runs out, then render an honest, defensible verdict.
+
+You are invisible to the candidate. The Executor speaks for you.
+
+# The Interviewer's Job, In Plain Terms
+
+1. **Guard the time.** It is YOUR fault if the interview ends without enough signal to make a decision. Not the candidate's.
+2. **Stay in the back seat.** The candidate should be talking 80%+ of the time. You listen, calibrate, and intervene only when it serves signal collection — not out of habit.
+3. **Collect breadth first, then depth.** The candidate must show they can solve the full problem end-to-end. Depth probes are discretionary. Breadth is mandatory.
+4. **Scale the difficulty to the candidate.** If they're exceeding the bar, push harder. If they're below it, ease back and find what they can do. Either way, the debrief needs real data — not just "they failed."
+5. **Never wrap before 45 minutes.** Time is your friend. More time = more signals. A strong hire at 30 minutes is still a strong hire at 50 — you just have more evidence.
 
 You output one JSON directive matching the schema. The Executor renders it. You never speak to the candidate directly. Anything you write into recommended_focus becomes a candidate-facing question via the Executor — treat it as if the candidate will read it.`;
 
-const MOVE_CATALOG = `MOVE CATALOG:
+const PHASES_BLOCK = `# The Interview Phases
 
-Listening moves:
-  LET_LEAD                — Candidate is driving with substance. Stay silent. recommended_focus="".
-  ANSWER_AND_RELEASE      — Candidate asked a direct scope/scale question. Give the one fact from interview_config, then release. Hard rule: one question = one fact. Never bundle.
+### Phase 0 — Introduction (2–3 min)
+The Executor handles the intro. No signals to collect here. Move to Phase 1 immediately after the candidate signals readiness.
 
-Probing moves:
-  GO_DEEPER (L1-L2)       — Candidate paused or gave a shallow answer with unexplored depth. Push on something they actually said.
-  CHALLENGE_ASSUMPTION (L2)
-                          — Candidate is building on an unstated assumption. Surface it without telling them the right assumption.
-  CHALLENGE_TRADEOFF (L2) — Candidate stated a design choice without naming its cost. Ask what they're giving up.
-  DRAW_NUMBERS (L1-L2)    — Candidate is reasoning qualitatively where back-of-envelope would change the design. Ask them to quantify. Never supply numbers.
-  INJECT_FAULT (L2-L3)    — Inject a failure scenario from interview_config.fault_scenarios. Choose the one most grounded in the design the candidate has described so far. Do NOT use a scenario that references a component the candidate hasn't mentioned.
-  RAISE_STAKES (L3)       — Push to a staff-level concern from interview_config.raise_stakes_prompts. Use only when momentum=hot and candidate has demonstrated solid L2 depth.
+### Phase 1 — Requirements (budget from config)
+**Candidate leads.** They should be asking clarifying questions, proposing scope, naming NFRs. You answer their questions. You observe what they raise — and what they don't.
 
-Lateral move within section (v4 FIX-1):
-  PIVOT_ANGLE (any)       — Used when consecutive_probes_on_subtopic >= 3 OR the candidate just said "I don't know" / is stuck on the current subtopic. Stop drilling the current sub-topic; move to a DIFFERENT angle (different signal area) within the SAME section. Not a section transition. Reset consecutive_probes_on_subtopic to 0 and update current_subtopic to the new angle. Example: if you've been on shard-key selection for 3 turns, pivot to ID generation or redirect-path latency — still in deep_dive, different angle.
+**The requirements phase ends with a contract.** When both sides have agreed on what's in scope, what's out of scope, and what the non-functional targets are, you lock the contract. From this point forward, this contract is the anchor for the entire session.
 
-Difficulty-down moves:
-  NARROW_SCOPE (L1)       — Candidate is stuck on a broad problem. Collapse it to a concrete sub-problem. Do not give the answer.
-  PROVIDE_ANCHOR (L1)     — Candidate is fully blocked. Give one concrete constraint to unlock movement. Flag as below-bar signal.
-  SALVAGE_AND_MOVE        — Section is not yielding signal. Get one last clean data point, then transition. Flag section as incomplete.
+If the candidate struggles in requirements:
+  - Not proposing any requirements unprompted → red flag (no_self_direction)
+  - Not asking about scale/NFRs → red flag (nfr_awareness missing)
+  - Jumping to architecture before requirements are discussed → red flag (premature_arch)
+  - Missing major in-scope items → probe for them before locking
 
-Transition moves:
-  HAND_OFF                — Section EXIT GATE passed (see EXIT GATES block) AND budget is near. Transition to next section. recommended_focus = verbal transition phrase. Update recommended_section_focus_id to next section id.
-  WRAP_TOPIC              — Section over budget. Hard cut regardless of exit gate. Flag as incomplete.
-  CLOSE                   — ONLY valid when (1) the final section is complete AND (2) every section has been touched (has at least one green/red flag OR was explicitly WRAP_TOPIC'd). See CLOSE GATE block. Set interview_done=true.`;
+How to lock the contract: when the candidate's requirements list is reasonably complete and they signal they're done (or budget is near), the Executor summarizes what's been agreed and explicitly closes the requirements phase. That summary becomes the contract. Emit \`requirements_contract.locked = true\` with the agreed lists and \`locked_at_turn\`.
 
-const DIFFICULTY_LEVELS = `DIFFICULTY LEVELS:
-  L1 — Baseline. Foundational and open-ended. Any competent target-level candidate should reach a reasonable answer.
-  L2 — Push. Requires depth, failure thinking, or explicit tradeoff reasoning. Distinguishes senior from mid.
-  L3 — Staff/Principal bar. Cost, abuse, multi-region, org implications, SLA breach. Distinguishes staff from senior.
+Do not lock an empty contract. If the candidate has given zero requirements, issue at least one requirements probe before transitioning.
 
-DIFFICULTY ASSIGNMENT RULE:
-  cold momentum                              → step DOWN one level (floor: L1)
-  warm momentum                              → hold current level
-  hot + 2 consecutive at/above target        → step UP one level (cap: L3)`;
+### Phase 2 — High Level Design (budget from config)
+**Candidate leads.** They draw/describe the system end-to-end. You observe breadth coverage.
 
-const MOMENTUM_SYSTEM = `ADAPTIVE DIFFICULTY SYSTEM:
+Breadth is mandatory. Depth is discretionary.
 
-MOMENTUM CALCULATION (last 3 substantive turns; skip procedural messages):
-  3x above_target                          → hot
-  2x above_target + 1x at_target           → hot
-  Mix of at_target                         → warm
-  2x below_target                          → cold
-  3x below_target                          → cold
-  Insufficient data                        → warm
+Breadth = can the candidate cover all the major components implied by the requirements contract? Track \`breadth_coverage.components_missing\`. If major components are missing as the section progresses, use NUDGE_BREADTH to steer them toward uncovered areas — without naming the component for them.
 
-MOMENTUM → INTERVIEW SHAPE:
-  hot   — Skip L1 probes in queue (no signal). Prefer INJECT_FAULT, RAISE_STAKES, CHALLENGE_ASSUMPTION. Goal: find where fluency breaks down; characterize the ceiling.
-  warm  — Steady L1/L2 pressure. Work probe queue systematically. Goal: confirm consistent at-bar performance across sections.
-  cold  — Drop to L1. Do NOT keep hammering a stuck point. NARROW_SCOPE first. If still stuck → PROVIDE_ANCHOR. If still stuck → SALVAGE_AND_MOVE. Shift laterally; find what they can do cleanly.`;
+Depth = can the candidate go deep on a specific component when pushed? Use depth probes when a component the candidate described has an interesting edge case, failure mode, or tradeoff worth exploring. Cap depth on any single component at 3 consecutive exchanges before pivoting.
 
-const TIME_MANAGEMENT = `TIME MANAGEMENT SYSTEM:
+The HLD phase is the longest and most important section. Give it full time.
 
-PER-SECTION BUDGET (section_pct_used = section_minutes / section.budget_minutes):
-  < 0.75    → on_track
-  0.75–1.0  → behind  (consider HAND_OFF after next probe)
-  ≥ 1.0     → critical (WRAP_TOPIC or HAND_OFF immediately)
+### Phase 3 — Deep Dive (budget from config)
+This is the section for topics that are special to this problem — the things that make this system design interesting and hard. The problem config defines what these are (\`deep_dive_topics\`). The candidate should ideally raise them on their own; if they don't, you guide them here.
 
-TOTAL INTERVIEW BUDGET:
-  Comfortable                             → no change
-  ~70% of budget for remaining sections   → compress; shorten probes; prioritize high-signal questions
-  <50% of budget for remaining sections   → WRAP_TOPIC current section; consider cutting lowest-signal remaining section
+Deep dive is where you get the most differentiated signal. A candidate at L4 will describe a working solution. A candidate at L5 will reason about tradeoffs. A candidate at L6 will surface problems you didn't ask about.
 
-HARD RULE: No single section may consume >40% of total interview time.
+### Phase 4 — Wrap (last 5 min)
+Signal that you have enough, thank the candidate, close cleanly. Never wrap before 45 minutes have elapsed from interview start. If it's before 45 minutes, find another angle — more breadth, a new fault scenario, a staff-level raise, or an INJECT_VARIANT — rather than closing early.`;
 
-COMPRESSION PRIORITY (cut in this order):
-  1. Extra probes in early sections when later sections are untouched
-  2. Additional probes in sections where bar is already clear
-  3. Never cut the highest-signal deep_dive equivalent section entirely
-  4. Never cut the operations/reliability section entirely`;
+const REQUIREMENTS_CONTRACT_BLOCK = `# The Requirements Contract
 
-const BAR_TRAJECTORY_SYSTEM = `BAR TRAJECTORY SYSTEM:
-  2+ sections trending above_target         → rising
-  Mixed at_target across sections           → flat
-  2+ sections with red flags or below_target → falling
+Once locked, the requirements contract is immutable for the session. It becomes the reference for:
+  - Breadth coverage checks — does the design address everything in scope?
+  - Constraint anchoring — when the candidate makes a design choice, is it consistent with the agreed NFRs?
+  - Scope creep detection — if the candidate starts building something not in the contract, flag it.
 
-BAR TRAJECTORY → REMAINING PLAN:
-  rising — Skip foundational L1 probes. Use freed time for L3 raises. Goal: characterize L5 vs L6 ceiling.
-  flat   — Standard plan. L2 pressure. Probe queue. Goal: confirm consistent target readiness.
-  falling — Breadth over depth. One clean answer per section beats three incomplete ones. Goal: honest floor/ceiling picture for debrief.`;
+If the candidate's design later contradicts the contract (e.g., they agreed on eventual consistency but are now designing for strong consistency), that is a probe opportunity — not a correction.`;
 
-const SIGNAL_CLASSIFICATION = `CANDIDATE SIGNAL CLASSIFICATION (commit on every turn):
-  driving         — Substantive design point, no prompting needed                         → default LET_LEAD
-  asked_question  — Specific scoping or fact question                                     → default ANSWER_AND_RELEASE
-  block_complete  — "I think that covers it" / "should we move on?" — closure cue         → HAND_OFF if EXIT GATE passed, otherwise probe for highest-priority missing signal
-  stuck           — Repeating, circling, "I don't know", or long pause                    → PIVOT_ANGLE if section has other unprobed angles, else SALVAGE_AND_MOVE
-  procedural      — "ok", "ready", "sure" — zero design content                           → LET_LEAD
+const ADAPTIVE_DIFFICULTY_BLOCK = `# Adaptive Difficulty System
 
-Procedural also includes META-QUESTIONS about the interview itself ("are you stuck?", "is the interview over?", "what should I focus on next?", "can you give me a hint?"). These map to LET_LEAD with empty recommended_focus. NEVER classify a meta-question as block_complete. NEVER respond to a meta-question with CLOSE or WRAP_TOPIC.
+### Momentum
+Evaluate the last 3 substantive turns:
 
-Tie-break: closure cue + transition question = block_complete. Never misclassify as driving. "I don't know" is ALWAYS stuck, never block_complete.`;
+| Pattern | Momentum |
+|---|---|
+| 3× above_target | hot |
+| 2× above_target + 1× at_target | hot |
+| Mix of at_target | warm |
+| 2× below_target | cold |
+| 3× below_target | cold |
+| Insufficient data | warm |
 
-const THREAD_DEPTH_RULE = `THREAD DEPTH RULE (FIX-1) — RABBIT-HOLE PREVENTION:
+### Difficulty Assignment
+| Momentum | Adjustment |
+|---|---|
+| cold | Step down one level (floor: L1) |
+| warm | Hold current level |
+| hot, 2+ consecutive at/above | Step up one level (cap: L3) |
 
-Track current_subtopic and consecutive_probes_on_subtopic across turns. The
-prior values are visible in RUNTIME STATE; you emit the new values in the
-schema.
+### What Each Level Looks Like in Practice
 
-Rule: if consecutive_probes_on_subtopic >= 3 going into this turn, you MUST
-NOT emit another probe on the same subtopic. You MUST either:
-  - PIVOT_ANGLE — different signal area within the SAME section, OR
-  - HAND_OFF / WRAP_TOPIC if EXIT GATE passed or budget spent
+L1 — Baseline. Open-ended, exploratory. Any senior candidate should handle this.
+  e.g. "How are you thinking about slug generation?" / "Walk me through the redirect path."
 
-What counts as "same subtopic": the subtopic label is specific (e.g.
-"consistent hashing rebalancing", "cache TTL strategy", "thundering herd
-mitigation"). If the new probe addresses the same underlying mechanism or
-failure mode as the previous probe, it is the same subtopic.
+L2 — Push. Requires failure thinking, explicit tradeoffs, depth under pressure.
+  e.g. "What's the failure mode if this component goes down?" / "What are you giving up with that approach?"
 
-Why: 3 consecutive probes on one sub-topic yields diminishing signal. After
-3, you already know if they can reason about that area. More probes there
-just eat budget and deprive you of signal from untouched sections.`;
+L3 — Staff/Principal bar. Cost, abuse, multi-region, org implications, SLA breach, architecture risk.
+  e.g. "How do you explain this cost model to your VP?" / "What breaks when you need to support 5 regions?"
 
-const EXIT_GATES_RULE = `EXIT GATES (FIX-2) — MINIMUM SIGNALS BEFORE HAND_OFF:
+### Momentum → Interview Shape
 
-Each section has an exit_gate.require_any list of signal_ids. HAND_OFF is
-valid ONLY if at least one of those signals is GREEN in flags_by_section,
-OR the section is over budget (in which case use WRAP_TOPIC + red incomplete
-flag, not HAND_OFF).
+hot (above bar): Don't confirm competence — find the ceiling. Skip L1 probes already in queue. Use INJECT_FAULT, RAISE_STAKES, INJECT_VARIANT. Explore what they haven't thought about. Document ceiling clearly for the debrief.
 
-If the section has zero greens from its require_any list AND budget allows
-another probe → do NOT HAND_OFF. Issue one targeted probe for the
-highest-priority missing signal. Pull from PROBE QUEUE if available;
-otherwise emit GO_DEEPER / DRAW_NUMBERS / CHALLENGE_TRADEOFF anchored on
-the candidate's words to elicit that signal.
+warm (at bar): Steady pressure. Breadth first, selective depth. Confirm consistent performance across all sections.
 
-If the section is over budget AND the gate is not passed:
-  → WRAP_TOPIC with flag { type: "red", signal_id: "section_incomplete",
-    note: "exit gate not passed — missing [list]" }
+cold (below bar): Don't keep hammering stuck points. Ease to L1. NARROW_SCOPE. Find what they can do cleanly. Build a picture for the debrief — "here's what they could do, here's where it stopped."`;
 
-Per-section gate visibility: see SECTION EXIT GATES in RUNTIME STATE.`;
+const RESPONSE_PACE_BLOCK = `# Response Pace Calibration
 
-const SCALE_FACT_INJECTION_RULE = `SCALE-FACT INJECTION CHECK (FIX-3):
+Track the candidate's response pattern over time. This is signal.
 
-Before finalizing recommended_focus, scan it for any number that appears in
-interview_config.scale_facts. Examples: "500,000 redirects/sec", "100M new
-links/day", "100:1 read/write ratio", "5,000 writes/sec", "200 bytes".
+| Pace | Description | Signal |
+|---|---|---|
+| fast | Clear, structured answers without long pauses | Green — confidence and preparation |
+| normal | Reasonable thinking time, steady responses | Neutral |
+| slow | Frequent long pauses, backtracking, restarting | Red — uncertainty, possible preparation gap |
+| suspiciously_fast | Answers arrive near-instantly for complex questions with no apparent thinking | Probe — possible rehearsed/cheated responses |
 
-If a number appears in recommended_focus AND the candidate did NOT ask for
-that specific fact in their LATEST CANDIDATE MESSAGE → either:
-  (a) rewrite the question without the number ("How does your design
-      handle the redirect load?" instead of "...500,000 redirects/sec?"), OR
-  (b) change move to DRAW_NUMBERS and ask the candidate to estimate it
-      themselves.
+If suspiciously_fast for 2+ consecutive complex turns:
+  Switch to a problem variant not covered in standard prep material. Use INJECT_VARIANT — a twist on the agreed requirements that tests genuine reasoning, not recall. Example: "Now assume your users are 90% read-only bots, not humans — how does your design change?"
 
-The point: if the candidate doesn't know the scale, that is signal. Don't
-hand them the number and then ask how they'd handle it.`;
+If slow for 2+ consecutive turns:
+  Do not keep waiting indefinitely. After ~45 seconds of silence, use NARROW_SCOPE to give them a smaller surface to attack. Flag slow pace but do not penalize the candidate for thinking — penalize them for going in circles.`;
 
-const CLOSE_GATE_RULE = `CLOSE GATE (FIX-4) — MINIMUM COVERAGE BEFORE CLOSE:
+const MOVE_CATALOG = `# Move Catalog
 
-CLOSE / interview_done=true is valid ONLY when ALL hold:
-  1. The final section in INTERVIEW PLAN has had at least one probe.
-  2. Every section has been touched (has at least one green or red flag,
-     OR was explicitly WRAP_TOPIC'd).
-  3. There are no untouched sections AND wall clock has < 3 minutes left,
-     OR every section is at-or-over its budget.
+### Passive moves (candidate is leading)
 
-If you are tempted to CLOSE but untouched sections exist and time > 3m:
-  → do NOT CLOSE.
-  → WRAP_TOPIC the current section.
-  → HAND_OFF to the highest-priority untouched section. Priority order:
-    deep_dive > operations > tradeoffs > high_level_design > requirements
+LET_LEAD
+  Default. Candidate is driving with substance on topic.
+  recommended_focus = "". Do not interrupt.
 
-"I DON'T KNOW" HANDLING (FIX-5):
-When the candidate says "I don't know", "not sure", "I'm stuck", or
-otherwise signals they have no answer:
-  - NEVER follow with another probe on the same subtopic.
-  - NEVER immediately CLOSE. NEVER WRAP_TOPIC the whole interview.
-  - Log a red flag for the relevant signal area.
-  - Reset consecutive_probes_on_subtopic to 0.
-  - If the section has other unprobed signal areas → PIVOT_ANGLE.
-  - Else if EXIT GATE passed or section over budget → SALVAGE_AND_MOVE
-    then HAND_OFF to the next untouched section.
-  - Else NARROW_SCOPE to a smaller piece of the same area.`;
+ANSWER_AND_RELEASE
+  Candidate asked a specific question. Give exactly the one fact from config. Release.
+  Rule: one question → one fact. Never bundle.
 
-const DECISION_ALGORITHM = `DECISION ALGORITHM:
+### Active moves (you are intervening)
 
-  STEP 1 — TIME CHECK
-    Compute section_pct_used (from SECTION BUDGETS) and total_pct_used (WALL CLOCK).
-    If critical → override: WRAP_TOPIC or HAND_OFF regardless of other factors.
-    Set time_status accordingly.
+NUDGE_BREADTH
+  Candidate has been in the weeds on one component and is missing other required components from the contract. Redirect toward coverage without naming the missing component.
+  e.g. "You've covered X well — before we go deeper there, I want to make sure we've got the full picture. What else does this system need?"
+  Use when: breadth_coverage.components_missing is non-empty AND section time is 50%+ used.
 
-  STEP 2 — CLASSIFY CANDIDATE SIGNAL
-    driving | asked_question | block_complete | stuck | procedural
+GO_DEEPER (L1–L2)
+  Candidate said something interesting. Push on one specific claim in their words.
 
-  STEP 3 — COMPUTE MOMENTUM
-    Use the MOMENTUM (last 3 substantive turns) line in RUNTIME STATE.
+CHALLENGE_ASSUMPTION (L2)
+  Surface an unstated assumption without naming the right one.
 
-  STEP 4 — CHECK THREAD DEPTH (FIX-1)
-    Read CURRENT SUBTOPIC and CONSECUTIVE PROBES ON IT from RUNTIME STATE.
-    If consecutive_probes_on_subtopic >= 3:
-      → if section has other unprobed signal areas → PIVOT_ANGLE
-      → else if EXIT GATE passed OR section over budget → HAND_OFF / WRAP_TOPIC
-      → else SALVAGE_AND_MOVE
-    Whatever you pick, MUST reset consecutive_probes_on_subtopic to 0 and update current_subtopic.
+CHALLENGE_TRADEOFF (L2)
+  They stated a design choice without naming its cost.
 
-  STEP 5 — CHECK SCALE-FACT INJECTION (FIX-3)
-    Before finalizing recommended_focus, scan it for any number that appears in
-    interview_config.scale_facts (e.g. "500,000", "500k", "100M", "5k", "100:1").
-    If a number appears AND the candidate did NOT ask for that specific fact in
-    their last message:
-      → rewrite the question without the number, OR
-      → change move to DRAW_NUMBERS and ask the candidate to estimate instead.
-    Goal: if the candidate doesn't know the scale, that is signal. Never give
-    them the number and then ask how they'd handle it.
+DRAW_NUMBERS (L1–L2)
+  Ask them to quantify. Never supply the numbers.
 
-  STEP 6 — SET DIFFICULTY
-    Apply the difficulty assignment rule based on momentum.
+INJECT_FAULT (L2–L3)
+  Drop a failure scenario from config.fault_scenarios grounded in what they've described.
 
-  STEP 7 — SELECT MOVE
-    asked_question                          → ANSWER_AND_RELEASE
-                                              recommended_focus = exactly ONE fact
-                                              answering ONE dimension. Never bundle
-                                              multiple scope dims. Never append a
-                                              transition phrase.
-    procedural / meta-question              → LET_LEAD (never CLOSE, never WRAP_TOPIC)
-    driving                                 → LET_LEAD
-    block_complete + EXIT GATE passed       → HAND_OFF (update recommended_section_focus_id to next section)
-    block_complete + EXIT GATE not passed   → probe for highest-priority missing signal in EXIT GATE require_any
-    stuck / "I don't know"                  → PIVOT_ANGLE (if section has other unprobed angles) or SALVAGE_AND_MOVE
-                                              NEVER another probe on the same subtopic. NEVER CLOSE.
-    consecutive_probes_on_subtopic >= 3     → PIVOT_ANGLE (or HAND_OFF if exit gate passed AND budget near)
-    momentum=hot + L2 depth shown           → INJECT_FAULT or RAISE_STAKES
-    otherwise                               → GO_DEEPER or CHALLENGE_TRADEOFF from queue
+RAISE_STAKES (L3)
+  Push to a staff-level concern from config.raise_stakes_prompts.
 
-  HAND_OFF GUARD (extends EXIT GATES block):
-    HAND_OFF fires ONLY if EXIT GATE passes AND at least one is true:
-      (a) candidate_signal == block_complete
-      (b) section time_status == critical (section_pct_used >= 1.0)
-      (c) section time_status == behind AND EXIT GATE already passed
-      (d) consecutive_probes_on_subtopic >= 3 AND no other unprobed angle exists in section
-    WRAP_TOPIC fires when section is over budget regardless of EXIT GATE (with red flag for incomplete).
-    Otherwise — within-section move only.
+INJECT_VARIANT (L2–L3)
+  Modify a requirement from the contract to test genuine reasoning. Pick from config.variant_scenarios.
+  Use when: momentum=hot OR response_pace=suspiciously_fast.
+  e.g. "Let's say instead of [original constraint], you now have [variant]. How does your design change?"
 
-  STEP 8 — CLOSE GATE CHECK (FIX-4)
-    If you are about to emit move=CLOSE or interview_done=true, verify ALL:
-      (a) the final section in INTERVIEW PLAN has at least one probe applied,
-      (b) every section has been touched (last_touch != NEVER) OR was WRAP_TOPIC'd,
-      (c) wall clock has < 3 minutes remaining OR every section is at-or-over budget.
-    If any fail → do NOT close. Instead WRAP_TOPIC the current section and HAND_OFF
-    to the highest-priority untouched section. Priority order:
-      deep_dive > operations > tradeoffs > high_level_design > requirements
+PIVOT_ANGLE
+  consecutive_probes_on_subtopic >= 3. Move to a different angle in the same section. Reset counter.
 
-  STEP 9 — WRITE recommended_focus
-    Must use the candidate's own vocabulary (words they have actually used).
-    Must NOT name a component, technology, or topic they have not raised.
-    Must NOT contain a scale-fact number unless the candidate asked for it.
-    Must be a single, concrete question — never compound.
+### Difficulty-down moves
 
-  STEP 10 — EMIT FLAGS, PROBES, TRAJECTORY
-    Max 2 probe_observations per turn. Each carries a pre-formed candidate-facing question in \`probe\`.
-    Max 2 flags per turn (green/red total).
-    At most 1 consumed_probe_id per turn.
-    Commit to performance_assessment on every substantive turn.
-    "unclear" only for procedural messages with zero design content.`;
+NARROW_SCOPE (L1)
+  Candidate is stuck or slow. Collapse to a concrete sub-problem.
 
-const HARD_PROHIBITIONS = `HARD PROHIBITIONS:
+PROVIDE_ANCHOR (L1)
+  Fully blocked. One concrete constraint. Flag as below-bar.
 
-recommended_focus must NEVER:
-  - Contain a scale-fact number the candidate didn't ask for (FIX-3)
-  - Name a component the candidate hasn't mentioned
-  - Name a technology they haven't mentioned
-  - Bundle two questions into one
-  - Restate their design back before asking (echoing)
-  - Correct their math
-  - Contain a section-transition phrase such as "walk me through ...",
-    "let's move on to ...", "shall we get into ...", "now for the design",
-    or any paraphrase, UNLESS move ∈ {HAND_OFF, WRAP_TOPIC}.
+SALVAGE_AND_MOVE
+  Section not yielding signal. One clean data point, then hard transition. Flag incomplete.
 
-NEVER:
-  - Issue CLOSE / interview_done=true when untouched sections remain and wall
-    clock has > 3 minutes left (FIX-4). Rewrite to HAND_OFF instead.
-  - Follow candidate "I don't know" / stuck with another probe on the SAME
-    subtopic (FIX-5). Use PIVOT_ANGLE or SALVAGE_AND_MOVE.
-  - Probe the same subtopic more than 3 consecutive times (FIX-1). At depth=3
-    you MUST emit PIVOT_ANGLE / HAND_OFF / WRAP_TOPIC.
-  - HAND_OFF a section whose EXIT GATE require_any has zero green signals if
-    section budget still allows a probe (FIX-2). Probe for the missing signal
-    first, or WRAP_TOPIC with a red incomplete flag if budget is spent.
-  - Emit more than one consumed_probe_id per turn
-  - Transition sections without HAND_OFF or WRAP_TOPIC
-  - Use L3 probes when momentum=cold
-  - Issue CLOSE on a meta-question ("are you stuck?", "is the interview over?")`;
+### Transition moves
+
+HAND_OFF
+  Section EXIT GATE passed AND budget near. Transition to next section.
+
+WRAP_TOPIC
+  Section over budget. Hard cut. Flag incomplete if exit gate not passed.
+
+CLOSE
+  Final section complete AND wall clock >= 45 minutes AND all sections touched.
+  interview_done = true.`;
+
+const THREAD_DEPTH_RULE = `# Thread Depth Rule
+
+\`consecutive_probes_on_subtopic\` tracks how many consecutive turns have probed the same sub-topic.
+
+If >= 3: You must PIVOT_ANGLE or transition. No exceptions.
+
+A sub-topic is the same if the new probe addresses the same underlying mechanism or failure mode as the last probe. Relabeling it doesn't make it different.
+
+Why: After 3 exchanges on one sub-topic, you know what you need to know. More probes don't change the bar assessment — they eat time and block other signal areas.`;
+
+const BREADTH_VS_DEPTH_BLOCK = `# Breadth vs. Depth Discipline
+
+Breadth probes (\`probe_type: "breadth"\`) — used when components_missing is non-empty.
+These are higher priority. A candidate who solves 4 out of 6 required components deeply is less impressive than one who covers all 6 adequately.
+
+Depth probes (\`probe_type: "depth"\`) — discretionary. Use when a specific component deserves more signal.
+Cap: 3 consecutive depth probes on any single component before pivoting.
+
+Rule: Never go 3+ consecutive depth probes while components_missing is non-empty.
+Breadth always wins over depth when there's uncovered ground.`;
+
+const EXIT_GATES_RULE = `# Section Exit Gates
+
+Each section in the config has an exit_gate.require_any list — at least one must be GREEN before HAND_OFF is valid.
+
+If exit gate not passed and budget remains: Issue one probe targeting the highest-priority uncollected gate signal. Do not HAND_OFF until gate passes or budget is exhausted (use WRAP_TOPIC if exhausted, with a red \`section_incomplete\` flag).
+
+Special case — requirements: The exit gate for requirements is contract must be locked with at least one NFR agreed. If the candidate listed only functional requirements and gave no NFRs, the gate has not passed.`;
+
+const FORTY_FIVE_MIN_RULE = `# The 45-Minute Rule
+
+CLOSE is ONLY valid when wall clock >= 45 minutes.
+
+If the design sections finish early:
+  1. First choice: go deeper on the highest-signal section
+  2. Second choice: introduce a fault scenario or stake raise not yet used
+  3. Third choice: ask a breadth question on a component that was covered lightly
+  4. Last resort: use INJECT_VARIANT to test genuine reasoning
+
+There is always more signal to collect. The ceiling of a strong candidate is as interesting as the floor of a struggling one. Use the time.`;
+
+const VERDICT_FRAMEWORK = `# Verdict Framework
+
+Track verdict_trajectory throughout. Update every substantive turn.
+
+| Verdict | Description |
+|---|---|
+| strong_hire | Consistently above bar. Proactively surfaced things not asked about. Handled L3 questions. Shows principal-level thinking in a senior interview. |
+| hire | Consistently at bar. Covered all required breadth. Handled L2 questions with depth. Minor gaps that don't affect the overall assessment. |
+| no_hire | Below bar on multiple sections. Required significant nudging for breadth. Could not reason through L2 questions. Design had structural issues. |
+| strong_no_hire | Significantly below bar. Could not cover required breadth unprompted. Failed basic L1 questions. Design missed foundational requirements. |
+| insufficient_data | Not enough signal yet. Only valid in early turns. |
+
+The verdict is a trajectory, not a point-in-time score. Update it as the interview progresses. A candidate who starts cold and warms up significantly should trend toward hire, not be penalized for the early turns.`;
+
+const SIGNAL_CLASSIFICATION = `# Candidate Signal Classification
+
+| Signal | Description | Default move |
+|---|---|---|
+| driving | Substantive design point, on topic | LET_LEAD |
+| asked_question | Specific scope/scale question | ANSWER_AND_RELEASE |
+| block_complete | "Should we move on?" / "That covers it" | HAND_OFF if gate passed, probe if not |
+| stuck | Circling, repeating, or "I don't know" | NARROW_SCOPE → PIVOT_ANGLE → SALVAGE_AND_MOVE |
+| missing_breadth | Driving but missing required components | NUDGE_BREADTH |
+| rabbit_holing | Going too deep on one component, ignoring breadth | PIVOT_ANGLE or NUDGE_BREADTH |
+| procedural | "ok", "sure", "ready" | LET_LEAD |
+
+Procedural also covers META-QUESTIONS about the interview ("are you stuck?", "is the interview over?", "what should I focus on?"). These map to LET_LEAD with empty recommended_focus. NEVER classify a meta-question as block_complete. NEVER respond to a meta-question with CLOSE or WRAP_TOPIC.
+
+"I don't know" is ALWAYS stuck, never block_complete.`;
+
+const DECISION_ALGORITHM = `# Decision Algorithm
+
+STEP 1 — TIME CHECK
+  Is wall clock >= 45 min? CLOSE only allowed after this point.
+  Compute section_pct_used and total_pct_used.
+  If critical → WRAP_TOPIC or HAND_OFF now.
+  Set time_status.
+
+STEP 2 — CLASSIFY CANDIDATE SIGNAL
+  driving | asked_question | block_complete | stuck | missing_breadth | rabbit_holing | procedural
+
+STEP 3 — CHECK THREAD DEPTH
+  If consecutive_probes_on_subtopic >= 3 → PIVOT_ANGLE (or HAND_OFF / WRAP_TOPIC if exit gate passed / budget spent)
+
+STEP 4 — CHECK BREADTH COVERAGE
+  If components_missing is non-empty AND section time >= 50% used
+  AND last 3 probes were depth probes → override to NUDGE_BREADTH
+
+STEP 5 — CHECK PACE
+  If suspiciously_fast for 2+ complex turns → INJECT_VARIANT
+  If slow for 2+ turns → NARROW_SCOPE
+
+STEP 6 — CHECK SCALE FACT INJECTION
+  Scan recommended_focus for numbers from scale_facts.
+  If a number appears AND the candidate didn't ask → rewrite WITHOUT the number, OR use DRAW_NUMBERS.
+  Goal: if the candidate doesn't know the scale, that is signal. Don't hand them the number then ask how they'd handle it.
+
+STEP 7 — COMPUTE MOMENTUM + SET DIFFICULTY
+
+STEP 8 — SELECT MOVE
+  asked_question                              → ANSWER_AND_RELEASE (one fact, one dimension, never bundle, never append a transition phrase)
+  procedural / meta-question                  → LET_LEAD (never CLOSE, never WRAP_TOPIC)
+  driving + no breadth gaps + thread ok       → LET_LEAD
+  driving + breadth gaps + section 50%+ used  → NUDGE_BREADTH
+  block_complete + exit gate passed           → HAND_OFF (update recommended_section_focus_id to next section)
+  block_complete + exit gate not passed       → probe for highest-priority gate signal
+  stuck / "I don't know"                      → NARROW_SCOPE → PIVOT_ANGLE → SALVAGE_AND_MOVE
+                                                 NEVER another probe on the same subtopic. NEVER CLOSE.
+  consecutive_probes_on_subtopic >= 3         → PIVOT_ANGLE (or HAND_OFF if gate passed AND budget near)
+  momentum=hot + L2 shown                     → INJECT_FAULT or RAISE_STAKES
+  pace=suspiciously_fast (2+ turns)           → INJECT_VARIANT
+  otherwise                                   → GO_DEEPER or CHALLENGE_TRADEOFF (or pull from probe queue)
+
+  HAND_OFF GUARD: HAND_OFF fires ONLY if EXIT GATE passes AND at least one is true:
+    (a) candidate_signal == block_complete
+    (b) section time_status == critical (section_pct_used >= 1.0)
+    (c) section time_status == behind AND EXIT GATE already passed
+    (d) consecutive_probes_on_subtopic >= 3 AND no other unprobed angle exists in section
+  WRAP_TOPIC fires when section is over budget regardless of EXIT GATE (with red flag for incomplete).
+
+STEP 9 — CLOSE GATE
+  CLOSE only valid if: wall_clock >= 45m AND all sections touched.
+  If not → find another angle (deeper on highest-signal section, fault scenario, breadth question, INJECT_VARIANT).
+  When forced to redirect: HAND_OFF to highest-priority untouched section. Priority order:
+    deep_dive > operations > high_level_design > requirements
+
+STEP 10 — WRITE recommended_focus
+  Single question in the candidate's vocabulary.
+  No scale numbers unless asked. No unseeded components.
+  Must NOT contain a section-transition phrase ("walk me through ...", "let's move on to ...", etc.) UNLESS move ∈ {HAND_OFF, WRAP_TOPIC}.
+
+STEP 11 — UPDATE VERDICT, TRAJECTORY, FLAGS
+  Commit performance_assessment on every substantive turn.
+  Update verdict_trajectory.
+  Max 2 probes, 2 flags, 1 consumed_probe_id per turn.`;
+
+const HARD_RULES_SUMMARY = `# Hard Rules Summary
+
+Time:
+  - Never CLOSE before 45 minutes
+  - No single section > 40% of total budget
+  - Never let candidate idle — time is your responsibility
+
+Breadth:
+  - Never 3+ consecutive depth probes while components_missing is non-empty
+  - Never HAND_OFF requirements without at least one NFR in the contract
+
+Thread depth:
+  - Never 3+ consecutive probes on the same subtopic
+
+Scale facts:
+  - Never inject a scale number the candidate didn't ask for
+
+"I don't know":
+  - Never follow with another probe on the same subtopic
+  - Never CLOSE immediately after
+  - PIVOT_ANGLE or SALVAGE_AND_MOVE
+
+Closing:
+  - All sections must be touched before CLOSE
+  - wall_clock >= 45 minutes required
+  - Never CLOSE on a meta-question`;
 
 /* --------------------------- Planner prompt --------------------------- */
 
 function buildPrompt({ config, interview, sessionState, candidateMessage, interviewerReply }) {
   const sections = Array.isArray(config?.sections) ? config.sections : [];
 
-  // Focus section: prior turn's recommendation, else first.
   const priorFocusId = String(sessionState?.next_directive?.recommended_section_focus_id || '').trim();
-  const { section: focus, index: focusIdx } = resolveFocusSection(config, priorFocusId);
+  const { section: focus } = resolveFocusSection(config, priorFocusId);
   const focusId = focus?.id || (sections[0]?.id || '');
 
   // Time accounting — interview wall clock.
@@ -736,21 +808,18 @@ function buildPrompt({ config, interview, sessionState, candidateMessage, interv
     ? Math.round((interviewElapsedMin / interviewTotalMin) * 100)
     : 0;
   const minutesLeft = Math.max(0, interviewTotalMin - interviewElapsedMin);
+  const fortyFiveGate = interviewElapsedMin >= 45 ? 'PASSED' : 'open';
 
-  // Per-section time tracking.
   const sectionMinutesUsed = sessionState?.section_minutes_used || {};
   const sectionBudgetsBlock = buildSectionBudgetsBlock(sections, sectionMinutesUsed);
 
-  // Current difficulty (from prior directive).
   const currentDifficulty = sessionState?.next_directive?.difficulty || 'L2';
 
-  // Momentum from eval_history.
   const momentumHistory = computeMomentumFromHistory(sessionState?.eval_history);
   const momentumLine = momentumHistory.length > 0
     ? momentumHistory.join(', ')
     : 'insufficient data';
 
-  // Probe queue + flags ACROSS sections.
   const probeQueueBlock = formatProbeQueueAcrossSections(sessionState?.probe_queue, sections);
   const flagsBlock = formatActiveFlags(sessionState?.flags_by_section, sections);
   const scoreboard = buildSectionScoreboard(sections, sessionState?.flags_by_section, sessionState?.probe_queue);
@@ -760,7 +829,6 @@ function buildPrompt({ config, interview, sessionState, candidateMessage, interv
     ? `[${untouched.map((s) => s.id).join(', ')}]`
     : '[] (all sections touched)';
 
-  // Subtopic counter (FIX-1) — Planner-emitted, substrate-persisted.
   const priorSubtopic = String(sessionState?.next_directive?.current_subtopic || '').trim();
   const priorSubtopicCount = Number(sessionState?.next_directive?.consecutive_probes_on_subtopic) || 0;
 
@@ -768,7 +836,15 @@ function buildPrompt({ config, interview, sessionState, candidateMessage, interv
   const transcript = formatTranscriptBlock(turns);
   const canvasSnapshot = formatCanvasBlock(interview);
 
-  // FOCUS RUBRIC (only for the focus section).
+  // Contract / breadth / pace / verdict_trajectory state from substrate.
+  const contractBlock = buildRequirementsContractBlock(sessionState?.requirements_contract);
+  const breadthBlock = buildBreadthCoverageBlock(config, sessionState?.breadth_coverage);
+  const responsePace = String(sessionState?.response_pace || 'normal');
+  const paceTurnsTracked = Number(sessionState?.pace_turns_tracked) || 0;
+  const verdictTraj = String(sessionState?.verdict_trajectory || 'insufficient_data');
+  const barTraj = sessionState?.next_directive?.bar_trajectory || 'flat';
+
+  // FOCUS RUBRIC (focus section only).
   const focusRubricBlock = focus
     ? [
         `FOCUS RUBRIC for "${focusId}" — the lens for THIS turn (silent baseline; never repeat to candidate):`,
@@ -783,6 +859,11 @@ function buildPrompt({ config, interview, sessionState, candidateMessage, interv
         focus.faang_bar ? `  FAANG bar    : ${focus.faang_bar}` : '',
         Array.isArray(focus.signals) && focus.signals.length
           ? `  Signal ids   :\n${focus.signals.map((s) => `    - ${s.id}: ${s.description}`).join('\n')}`
+          : '',
+        Array.isArray(focus.deep_dive_topics) && focus.deep_dive_topics.length
+          ? `  Deep-dive topics (this section is the place for these — candidate ideally raises them; you guide if not):\n${focus.deep_dive_topics
+              .map((t) => `    - ${t.id} (${t.label || t.id}): ${t.description || ''}\n        good: ${t.what_good_looks_like || ''}`)
+              .join('\n')}`
           : '',
         focus.leveling
           ? [
@@ -805,13 +886,103 @@ function buildPrompt({ config, interview, sessionState, candidateMessage, interv
         .join('\n')
     : '';
 
-  // INTERVIEW PLAN (short form).
   const planLines = sections.map((s, i) =>
     `  ${i + 1}. ${s.id} (${Number(s.budget_minutes) || 0}m) — ${s.goal || s.label || s.id}`
   );
 
+  // === Output schema reference (the candidate-facing schema, embedded
+  // verbatim so the LLM has it inline alongside the JSON-mode response_schema). ===
+  const outputSchemaBlock = `# Output Schema
+
+Emit exactly this JSON and nothing else:
+
+{
+  "move": "<see Move Catalog>",
+  "difficulty": "<L1 | L2 | L3>",
+  "recommended_section_focus_id": "<section id>",
+  "recommended_focus": "<candidate-facing content. Empty string for LET_LEAD.>",
+  "consumed_probe_id": "<probe id or empty string>",
+
+  "current_subtopic": "<3-5 word label for current sub-topic>",
+  "consecutive_probes_on_subtopic": "<integer>",
+
+  "requirements_contract": {
+    "locked": "<true | false>",
+    "functional": ["<list of agreed functional requirements>"],
+    "non_functional": ["<list of agreed NFRs>"],
+    "in_scope": ["<list>"],
+    "out_of_scope": ["<list>"],
+    "locked_at_turn": "<turn number when locked, or null>"
+  },
+
+  "breadth_coverage": {
+    "components_mentioned": ["<list of design components candidate has raised>"],
+    "components_missing": ["<list of in-scope components not yet addressed>"]
+  },
+
+  "response_pace": "<fast | normal | slow | suspiciously_fast>",
+  "pace_turns_tracked": "<integer — how many consecutive turns at this pace>",
+
+  "probe_observations": [
+    {
+      "id": "<short_snake_id>",
+      "section_id": "<section id>",
+      "observation": "<what candidate said, in their words>",
+      "probe": "<follow-up question>",
+      "difficulty": "<L1 | L2 | L3>",
+      "probe_type": "<breadth | depth>"
+    }
+  ],
+
+  "flags": [
+    {
+      "type": "<green | red>",
+      "section_id": "<section id>",
+      "signal_id": "<signal id from config>",
+      "note": "<brief evidence>"
+    }
+  ],
+
+  "momentum": "<hot | warm | cold>",
+  "bar_trajectory": "<rising | flat | falling>",
+  "performance_assessment": "<above_target | at_target | below_target | unclear>",
+  "verdict_trajectory": "<strong_hire | hire | no_hire | strong_no_hire | insufficient_data>",
+  "time_status": "<on_track | behind | critical>",
+  "candidate_signal": "<driving | asked_question | block_complete | stuck | missing_breadth | rabbit_holing | procedural>",
+  "interview_done": false,
+  "notes": "<short free-text>"
+}`;
+
   const blocks = [
     ROLE_BLOCK,
+    '',
+    outputSchemaBlock,
+    '',
+    PHASES_BLOCK,
+    '',
+    REQUIREMENTS_CONTRACT_BLOCK,
+    '',
+    ADAPTIVE_DIFFICULTY_BLOCK,
+    '',
+    RESPONSE_PACE_BLOCK,
+    '',
+    MOVE_CATALOG,
+    '',
+    THREAD_DEPTH_RULE,
+    '',
+    BREADTH_VS_DEPTH_BLOCK,
+    '',
+    EXIT_GATES_RULE,
+    '',
+    FORTY_FIVE_MIN_RULE,
+    '',
+    VERDICT_FRAMEWORK,
+    '',
+    SIGNAL_CLASSIFICATION,
+    '',
+    DECISION_ALGORITHM,
+    '',
+    HARD_RULES_SUMMARY,
     '',
     '=== INTERVIEW CONFIG ===',
     JSON.stringify(
@@ -822,35 +993,47 @@ function buildPrompt({ config, interview, sessionState, candidateMessage, interv
         problem: config?.problem,
         scope: config?.scope,
         scale_facts: config?.scale_facts,
+        required_breadth_components: config?.required_breadth_components,
         fault_scenarios: config?.fault_scenarios,
         raise_stakes_prompts: config?.raise_stakes_prompts,
+        variant_scenarios: config?.variant_scenarios,
       },
       null,
       2
     ),
     '',
     '=== RUNTIME STATE ===',
-    `WALL CLOCK:        ${interviewElapsedMin.toFixed(1)}m / ${interviewTotalMin}m used (${interviewElapsedPct}%)`,
-    `REMAINING:         ~${minutesLeft.toFixed(1)}m`,
+    `WALL CLOCK:                ${interviewElapsedMin.toFixed(1)}m / ${interviewTotalMin}m (${interviewElapsedPct}%)`,
+    `REMAINING:                 ~${minutesLeft.toFixed(1)}m`,
+    `45-MIN GATE:               ${fortyFiveGate}`,
     '',
     'SECTION BUDGETS:',
     sectionBudgetsBlock,
     '',
-    `CURRENT SECTION:   ${focusId}`,
-    `CURRENT DIFFICULTY: ${currentDifficulty}`,
-    `CURRENT SUBTOPIC:           ${priorSubtopic || '(none yet)'}`,
-    `CONSECUTIVE PROBES ON IT:   ${priorSubtopicCount}    (HARD CAP 3 — at >=3 you MUST PIVOT_ANGLE / HAND_OFF / WRAP_TOPIC, not probe again)`,
+    `CURRENT SECTION:           ${focusId}`,
+    `CURRENT DIFFICULTY:        ${currentDifficulty}`,
+    `CURRENT SUBTOPIC:          ${priorSubtopic || '(none yet)'}`,
+    `CONSECUTIVE PROBES ON IT:  ${priorSubtopicCount}    (HARD CAP 3 — at >=3 you MUST PIVOT_ANGLE / HAND_OFF / WRAP_TOPIC, not probe again)`,
     '',
-    `MOMENTUM (last 3 substantive performance assessments): ${momentumLine}`,
-    `BAR TRAJECTORY (prior): ${sessionState?.next_directive?.bar_trajectory || 'flat'}`,
+    'REQUIREMENTS CONTRACT:',
+    contractBlock,
+    '',
+    'BREADTH COVERAGE:',
+    breadthBlock,
+    '',
+    `RESPONSE PACE:             ${responsePace} (${paceTurnsTracked} consecutive turns)`,
+    '',
+    `MOMENTUM (last 3 substantive turns): ${momentumLine}`,
+    `BAR TRAJECTORY:            ${barTraj}`,
+    `VERDICT TRAJECTORY:        ${verdictTraj}`,
     '',
     'SECTION SCOREBOARD:',
     scoreboard,
     '',
-    'SECTION EXIT GATES (FIX-2 — HAND_OFF requires gate passed OR section over budget):',
+    'SECTION EXIT GATES (HAND_OFF requires gate passed OR section over budget):',
     exitGatesBlock,
     '',
-    `SECTIONS UNTOUCHED (FIX-4 — CLOSE forbidden while these exist + time > 3m): ${untouchedLabel}`,
+    `SECTIONS UNTOUCHED (CLOSE forbidden while these exist OR wall_clock < 45m): ${untouchedLabel}`,
     '',
     'PROBE QUEUE:',
     probeQueueBlock,
@@ -869,36 +1052,43 @@ function buildPrompt({ config, interview, sessionState, candidateMessage, interv
     canvasSnapshot ? `CANVAS:\n${canvasSnapshot}\n` : '',
     `LATEST INTERVIEWER TURN: ${String(interviewerReply || '').slice(0, 1000)}`,
     `LATEST CANDIDATE MESSAGE: ${String(candidateMessage || '').slice(0, 1500)}`,
-    '',
-    MOVE_CATALOG,
-    '',
-    DIFFICULTY_LEVELS,
-    '',
-    MOMENTUM_SYSTEM,
-    '',
-    TIME_MANAGEMENT,
-    '',
-    BAR_TRAJECTORY_SYSTEM,
-    '',
-    SIGNAL_CLASSIFICATION,
-    '',
-    THREAD_DEPTH_RULE,
-    '',
-    EXIT_GATES_RULE,
-    '',
-    SCALE_FACT_INJECTION_RULE,
-    '',
-    CLOSE_GATE_RULE,
-    '',
-    DECISION_ALGORITHM,
-    '',
-    HARD_PROHIBITIONS,
   ];
 
   return blocks.filter((b) => b !== null && b !== undefined).join('\n');
 }
 
 /* --------------------------- Capture call ----------------------------- */
+
+function normalizeContract(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    locked: raw.locked === true,
+    functional: Array.isArray(raw.functional) ? raw.functional.map(String).slice(0, 24) : [],
+    non_functional: Array.isArray(raw.non_functional) ? raw.non_functional.map(String).slice(0, 24) : [],
+    in_scope: Array.isArray(raw.in_scope) ? raw.in_scope.map(String).slice(0, 24) : [],
+    out_of_scope: Array.isArray(raw.out_of_scope) ? raw.out_of_scope.map(String).slice(0, 24) : [],
+    locked_at_turn:
+      raw.locked_at_turn !== null && raw.locked_at_turn !== undefined && Number.isFinite(Number(raw.locked_at_turn))
+        ? Math.floor(Number(raw.locked_at_turn))
+        : null,
+  };
+}
+
+function normalizeBreadth(raw, requiredComponents = []) {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      components_mentioned: [],
+      components_missing: requiredComponents.slice(),
+    };
+  }
+  const mentioned = Array.isArray(raw.components_mentioned)
+    ? raw.components_mentioned.map(String).slice(0, 32)
+    : [];
+  const missing = Array.isArray(raw.components_missing)
+    ? raw.components_missing.map(String).slice(0, 32)
+    : requiredComponents.filter((c) => !mentioned.includes(c));
+  return { components_mentioned: mentioned, components_missing: missing };
+}
 
 export async function captureTurnEval({
   config,
@@ -925,7 +1115,7 @@ export async function captureTurnEval({
       response_json_schema: SCHEMA,
       modelTier: 'eval',
       temperature: 0.1,
-      max_tokens: 1200,
+      max_tokens: 1600,
     });
   } catch (err) {
     console.warn(`[evalCapture] failed: ${err?.message || err}`);
@@ -937,11 +1127,16 @@ export async function captureTurnEval({
       consumed_probe_id: '',
       current_subtopic: '',
       consecutive_probes_on_subtopic: 0,
+      requirements_contract: null,
+      breadth_coverage: normalizeBreadth(null, config?.required_breadth_components || []),
+      response_pace: 'normal',
+      pace_turns_tracked: 0,
       probe_observations: [],
       flags: [],
       momentum: 'warm',
       bar_trajectory: 'flat',
       performance_assessment: 'unclear',
+      verdict_trajectory: 'insufficient_data',
       time_status: 'on_track',
       candidate_signal: 'driving',
       interview_done: false,
@@ -959,6 +1154,10 @@ export async function captureTurnEval({
     return noop;
   }
 
+  const requiredComponents = Array.isArray(config?.required_breadth_components)
+    ? config.required_breadth_components
+    : [];
+
   const captured = {
     move: MOVES.includes(result?.move) ? result.move : 'LET_LEAD',
     difficulty: DIFFICULTIES.includes(result?.difficulty) ? result.difficulty : 'L2',
@@ -975,13 +1174,21 @@ export async function captureTurnEval({
     consecutive_probes_on_subtopic: Number.isFinite(Number(result?.consecutive_probes_on_subtopic))
       ? Math.max(0, Math.min(20, Math.floor(Number(result.consecutive_probes_on_subtopic))))
       : 0,
+    requirements_contract: normalizeContract(result?.requirements_contract),
+    breadth_coverage: normalizeBreadth(result?.breadth_coverage, requiredComponents),
+    response_pace: RESPONSE_PACES.includes(result?.response_pace) ? result.response_pace : 'normal',
+    pace_turns_tracked: Number.isFinite(Number(result?.pace_turns_tracked))
+      ? Math.max(0, Math.min(20, Math.floor(Number(result.pace_turns_tracked))))
+      : 0,
     probe_observations: Array.isArray(result?.probe_observations)
       ? result.probe_observations
           .map((p) => ({
+            id: typeof p?.id === 'string' && p.id.trim() ? p.id.trim().slice(0, 40) : '',
             observation: String(p?.observation || '').slice(0, 200),
             probe: String(p?.probe || '').slice(0, 240),
             section_id: String(p?.section_id || '').trim().slice(0, 80),
             difficulty: DIFFICULTIES.includes(p?.difficulty) ? p.difficulty : 'L2',
+            probe_type: PROBE_TYPES.includes(p?.probe_type) ? p.probe_type : 'depth',
           }))
           .filter((p) => p.observation && p.probe && p.section_id)
           .slice(0, 2)
@@ -1004,6 +1211,9 @@ export async function captureTurnEval({
     performance_assessment: PERFORMANCE_ASSESSMENTS.includes(result?.performance_assessment)
       ? result.performance_assessment
       : 'unclear',
+    verdict_trajectory: VERDICT_TRAJECTORIES.includes(result?.verdict_trajectory)
+      ? result.verdict_trajectory
+      : 'insufficient_data',
     time_status: TIME_STATUSES.includes(result?.time_status) ? result.time_status : 'on_track',
     candidate_signal: CANDIDATE_SIGNALS.includes(result?.candidate_signal)
       ? result.candidate_signal
@@ -1046,12 +1256,15 @@ function appendProbeObservations(sessionState, observations, turnIndex, focusFal
     if (!Array.isArray(sessionState.probe_queue[sid])) {
       sessionState.probe_queue[sid] = [];
     }
-    const id = `pq_${turnIndex}_${i}`;
+    const id = o.id && /^[a-z0-9_-]{1,40}$/i.test(o.id)
+      ? o.id
+      : `pq_${turnIndex}_${i}`;
     sessionState.probe_queue[sid].push({
       id,
       observation: o.observation,
       probe: o.probe,
       difficulty: o.difficulty || 'L2',
+      probe_type: o.probe_type || 'depth',
       added_at_turn: turnIndex,
       consumed: false,
       consumed_at_turn: null,
@@ -1112,58 +1325,28 @@ function appendFlags(sessionState, flagsList, turnIndex, focusFallbackId) {
   return added;
 }
 
-/* --------------------------- Executor reply validator --------------- */
-
-/**
- * Post-stream observability validator. Inspects the streamed Executor reply
- * for shape violations (multi-probe HAND_OFF, WRAP_TOPIC with a probe,
- * verbatim echoing). Records weak signals into captured.notes (does NOT
- * modify the reply — candidate already saw it).
- */
-export function validateExecutorReply({ reply, derivedMove, candidateMessage }) {
-  const out = { flags: [] };
-  const text = String(reply || '');
-  const normalized = normalizeForFuzzyMatch(text);
-  if (!normalized) return out;
-
-  const questionCount = (text.match(/\?/g) || []).length;
-  if (derivedMove === 'WRAP_TOPIC' && questionCount > 0) {
-    out.flags.push(`executor_wrap_with_probe: "${text.slice(0, 80)}"`);
-  }
-  if (derivedMove === 'HAND_OFF' && questionCount >= 2) {
-    out.flags.push(`executor_handoff_multi_probe: "${text.slice(0, 80)}"`);
-  }
-
-  const candidateNorm = normalizeForFuzzyMatch(candidateMessage || '');
-  if (candidateNorm.length >= 40 && normalized.length >= 40) {
-    const words = candidateNorm.split(' ');
-    for (let i = 0; i + 8 <= words.length; i += 1) {
-      const slice = words.slice(i, i + 8).join(' ');
-      if (slice.length >= 30 && normalized.includes(slice)) {
-        out.flags.push(`executor_echoing: "${slice.slice(0, 80)}"`);
-        break;
-      }
-    }
-  }
-
-  return out;
-}
-
 /* --------------------------- Persistence ------------------------------ */
 
 /**
  * Apply the captured Planner result to interview.session_state (mutating).
  *
- * No section advancement, no validator self-heal, no coverage gates. The
- * Planner directs everything; JS persists.
- *
  * Section_id routing: probes / flags / time-tracking are keyed by the
  * Planner's `recommended_section_focus_id` (or per-item section_id).
+ *
+ * Hard substrate behaviors:
+ *   1. Requirements contract — write to session_state.requirements_contract
+ *      only on first lock. Once locked=true, the substrate refuses to
+ *      overwrite (immutable for the session).
+ *   2. Breadth coverage / response_pace / verdict_trajectory — overwrite
+ *      each turn with the latest snapshot.
+ *   3. 45-minute CLOSE floor — if move==='CLOSE' or interview_done===true
+ *      and wall clock < 45m AND not all sections at-or-over budget,
+ *      downgrade to HAND_OFF to the highest-priority untouched section.
  */
 export function applyEvalToSessionState(
   interview,
   captured,
-  { config, candidateMessage, candidateTurnIndex, interviewerReply = '', validatorResult = null }
+  { config, candidateTurnIndex }
 ) {
   if (!interview.session_state) interview.session_state = {};
   const ss = interview.session_state;
@@ -1184,12 +1367,11 @@ export function applyEvalToSessionState(
   const probeFallback = captured.probe_observations?.find((p) => p?.section_id)?.section_id || '';
   const priorFocusId = String(ss.next_directive?.recommended_section_focus_id || '').trim();
   const hintId = plannerFocusId || flagFallback || probeFallback || priorFocusId;
-  const { section: focus, index: focusIdx } = resolveFocusSection(config, hintId, priorFocusId);
+  const { section: focus } = resolveFocusSection(config, hintId, priorFocusId);
   const focusId = focus?.id || '';
 
-  // --- Per-section time tracking (advisory; computed before persisting next_directive).
-  // Attribute the elapsed time since last_turn_ts to the PRIOR focus section
-  // (the section we were just on), not the new one.
+  // --- Per-section time tracking. Attribute the elapsed time since
+  // last_turn_ts to the PRIOR focus section.
   const nowMs = Date.now();
   const lastTurnTs = Number(ss.last_turn_ts) || nowMs;
   const elapsedMin = Math.max(0, (nowMs - lastTurnTs) / 60000);
@@ -1204,34 +1386,51 @@ export function applyEvalToSessionState(
     ss.performance_by_section[focusId] = captured.performance_assessment;
   }
 
-  // --- Leak guard on focus (blanks focus only; move stands).
-  const rubricStrings = collectRubricStringsFromConfig(config);
-  const leakMatch = focusLooksLikeRubricLeak(captured.recommended_focus, rubricStrings);
-  let leakGuardTriggered = false;
-  if (leakMatch) {
-    console.warn('[planner] rubric leak in focus, blanking (move untouched)', {
-      originalFocus: captured.recommended_focus,
-      matchedRubric: leakMatch,
-    });
-    captured.recommended_focus = '';
-    leakGuardTriggered = true;
-  }
-
-  // --- Executor reply leak (observability tripwire).
-  let replyLeakTriggered = false;
-  if (interviewerReply) {
-    const replyLeak = focusLooksLikeRubricLeak(interviewerReply, rubricStrings);
-    if (replyLeak) {
-      console.warn('[executor] reply paraphrased rubric — observability only', {
-        replySnippet: String(interviewerReply).trim().slice(0, 80),
-        matchedRubric: replyLeak,
-      });
-      replyLeakTriggered = true;
+  // --- Requirements contract (immutable once locked).
+  let contractLockedThisTurn = false;
+  if (captured.requirements_contract) {
+    const prior = ss.requirements_contract;
+    if (prior?.locked === true) {
+      // Already locked — substrate refuses to overwrite. Keep prior.
+    } else if (captured.requirements_contract.locked === true) {
+      const rawLockedAt = captured.requirements_contract.locked_at_turn;
+      const parsedLockedAt =
+        rawLockedAt !== null && rawLockedAt !== undefined && Number.isFinite(Number(rawLockedAt))
+          ? Number(rawLockedAt)
+          : candidateTurnIndex;
+      ss.requirements_contract = {
+        ...captured.requirements_contract,
+        locked_at_turn: parsedLockedAt,
+      };
+      contractLockedThisTurn = true;
+    } else {
+      // Not yet locked — store latest "proposed" snapshot for visibility.
+      ss.requirements_contract = { ...captured.requirements_contract, locked: false };
     }
   }
 
-  // --- Validator-emitted flags (notes only).
-  const validatorFlags = Array.isArray(validatorResult?.flags) ? validatorResult.flags : [];
+  // --- Breadth coverage (overwrite snapshot).
+  if (captured.breadth_coverage) {
+    ss.breadth_coverage = {
+      components_mentioned: Array.isArray(captured.breadth_coverage.components_mentioned)
+        ? captured.breadth_coverage.components_mentioned.slice(0, 32)
+        : [],
+      components_missing: Array.isArray(captured.breadth_coverage.components_missing)
+        ? captured.breadth_coverage.components_missing.slice(0, 32)
+        : [],
+    };
+  }
+
+  // --- Response pace + verdict_trajectory.
+  if (RESPONSE_PACES.includes(captured.response_pace)) {
+    ss.response_pace = captured.response_pace;
+  }
+  if (Number.isFinite(Number(captured.pace_turns_tracked))) {
+    ss.pace_turns_tracked = Math.max(0, Math.floor(Number(captured.pace_turns_tracked)));
+  }
+  if (VERDICT_TRAJECTORIES.includes(captured.verdict_trajectory)) {
+    ss.verdict_trajectory = captured.verdict_trajectory;
+  }
 
   // --- Probe queue: append observations.
   let appendedProbeIds = [];
@@ -1256,7 +1455,7 @@ export function applyEvalToSessionState(
   // --- Flags persistence.
   const flagsAddedCount = appendFlags(ss, captured.flags, candidateTurnIndex, focusId);
 
-  // --- Wall-clock for FIX-4 CLOSE gate.
+  // --- Wall-clock for 45-minute CLOSE floor.
   const interviewStartTs = interview?.session_started_at
     ? new Date(interview.session_started_at).getTime()
     : null;
@@ -1266,9 +1465,8 @@ export function applyEvalToSessionState(
   const interviewTotalMin = Number(config?.total_minutes) ||
     sections.reduce((a, s) => a + (Number(s.budget_minutes) || 0), 0);
   const interviewElapsedFraction = interviewTotalMin > 0 ? interviewElapsedMin / interviewTotalMin : 0;
-  const minutesRemaining = Math.max(0, interviewTotalMin - interviewElapsedMin);
 
-  // --- FIX-4 CLOSE gate (substrate backstop).
+  // --- 45-minute CLOSE floor (substrate backstop).
   // Recompute "untouched" AFTER applying flags / probes from this turn so the
   // current section's first touch counts.
   let closeBlockedReason = null;
@@ -1280,27 +1478,25 @@ export function applyEvalToSessionState(
       const budget = Number(s.budget_minutes) || 0;
       return budget > 0 && used >= budget;
     });
+    const wallClockOk = interviewElapsedMin >= 45;
     const closeAllowed =
-      untouched.length === 0 || minutesRemaining < 3 || allOverBudget;
+      wallClockOk && (untouched.length === 0 || allOverBudget);
     if (!closeAllowed) {
       const target = pickPriorityUntouchedSection(untouched);
       const targetId = target?.id || resolvedFocusId;
-      console.warn('[planner] CLOSE blocked by FIX-4 gate, downgrading to HAND_OFF', {
+      console.warn('[planner] CLOSE blocked, downgrading to HAND_OFF', {
+        wallClockMin: Number(interviewElapsedMin.toFixed(1)),
         untouchedIds: untouched.map((s) => s.id),
-        minutesRemaining: Number(minutesRemaining.toFixed(1)),
         redirectedTo: targetId,
       });
       captured.move = 'HAND_OFF';
       captured.interview_done = false;
       captured.recommended_focus = '';
       captured.recommended_section_focus_id = targetId;
-      // Reset subtopic counter — we're moving to a new section.
       captured.current_subtopic = '';
       captured.consecutive_probes_on_subtopic = 0;
       resolvedFocusId = targetId;
-      closeBlockedReason = untouched.length > 0
-        ? 'untouched_sections_with_time'
-        : 'wall_clock_below_floor';
+      closeBlockedReason = !wallClockOk ? 'wall_clock_below_45m' : 'untouched_sections';
     }
   }
 
@@ -1318,7 +1514,9 @@ export function applyEvalToSessionState(
     consecutive_probes_on_subtopic: Number(captured.consecutive_probes_on_subtopic) || 0,
     momentum: captured.momentum,
     bar_trajectory: captured.bar_trajectory,
+    verdict_trajectory: captured.verdict_trajectory,
     time_status: captured.time_status,
+    response_pace: captured.response_pace,
     answer_only: answerOnly,
     generated_after_turn: candidateTurnIndex,
   };
@@ -1331,6 +1529,9 @@ export function applyEvalToSessionState(
   }
 
   // --- Audit trail.
+  const breadthMissingCount = Array.isArray(ss.breadth_coverage?.components_missing)
+    ? ss.breadth_coverage.components_missing.length
+    : 0;
   ss.eval_history.push({
     turn_index: candidateTurnIndex,
     notes: captured.notes,
@@ -1340,7 +1541,13 @@ export function applyEvalToSessionState(
     difficulty: captured.difficulty,
     momentum: captured.momentum,
     bar_trajectory: captured.bar_trajectory,
+    verdict_trajectory: captured.verdict_trajectory,
     time_status: captured.time_status,
+    response_pace: captured.response_pace,
+    pace_turns_tracked: captured.pace_turns_tracked,
+    requirements_contract_locked_at_turn: ss.requirements_contract?.locked_at_turn ?? null,
+    contract_locked_this_turn: contractLockedThisTurn,
+    breadth_components_missing_count: breadthMissingCount,
     recommended_section_focus_id: resolvedFocusId,
     current_subtopic: String(captured.current_subtopic || ''),
     consecutive_probes_on_subtopic: Number(captured.consecutive_probes_on_subtopic) || 0,
@@ -1348,10 +1555,7 @@ export function applyEvalToSessionState(
     consumed_probe_id: captured.consumed_probe_id || '',
     probe_observations_added: appendedProbeIds.length,
     flags_added_count: flagsAddedCount,
-    leak_guard_triggered: leakGuardTriggered,
-    reply_leak_triggered: replyLeakTriggered,
     close_blocked_reason: closeBlockedReason,
-    validator_flags: validatorFlags,
     interview_done: !!captured.interview_done,
     at: new Date(),
   });
@@ -1372,7 +1576,13 @@ export {
   TIME_STATUSES,
   PERFORMANCE_ASSESSMENTS,
   CANDIDATE_SIGNALS,
+  RESPONSE_PACES,
+  VERDICT_TRAJECTORIES,
+  PROBE_TYPES,
+  UNTOUCHED_PRIORITY,
   buildPrompt,
   sectionWindowedTurns,
   formatTranscriptBlock,
+  listUntouchedSections,
+  pickPriorityUntouchedSection,
 };

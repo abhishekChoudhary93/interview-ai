@@ -3,13 +3,14 @@ import { invokeLLM } from './llmInvoke.js';
 import { recordSessionEndMetadata } from './interviewDebriefContext.js';
 
 /**
- * v3 debrief generator.
+ * v5 debrief generator.
  *
  * The Planner has already done the per-turn judgment work — green/red flags
- * tagged with section_id and signal_id, momentum and bar trajectory, time
- * accounting per section. The debrief LLM's job is purely synthesis: read
- * those flags, the per-section leveling descriptions, and the transcript,
- * and write a structured report.
+ * tagged with section_id and signal_id, momentum, bar trajectory, verdict
+ * trajectory, breadth coverage, and the locked requirements contract. The
+ * debrief LLM's job is purely synthesis: read those flags, the contract,
+ * the per-section leveling descriptions, the breadth coverage snapshot,
+ * and the transcript — then write a structured report.
  *
  * No coverage gates beyond the (well-tested) `applyDebriefVerdictGuards`.
  */
@@ -167,6 +168,9 @@ function buildPerSectionEvidenceBlock(config, sessionState) {
   const sectionMinutesUsed = sessionState?.section_minutes_used || {};
   const probeQueue = sessionState?.probe_queue || {};
   const evalHistory = Array.isArray(sessionState?.eval_history) ? sessionState.eval_history : [];
+  const breadthMissing = Array.isArray(sessionState?.breadth_coverage?.components_missing)
+    ? sessionState.breadth_coverage.components_missing
+    : [];
 
   const everTouched = new Set();
   for (const e of evalHistory) {
@@ -191,6 +195,9 @@ function buildPerSectionEvidenceBlock(config, sessionState) {
 
     lines.push(`SECTION ${id} — "${sec.label || id}"  [${status}]`);
     lines.push(`  budget: ${budget}m   used: ${minutesUsed}m   live performance: ${perf}`);
+    if (id === 'high_level_design' && breadthMissing.length > 0) {
+      lines.push(`  BREADTH GAPS (components never raised): ${breadthMissing.join(', ')}`);
+    }
     if (sec.faang_bar) lines.push(`  FAANG bar: ${sec.faang_bar}`);
     const lev = formatLevelingForSection(sec);
     if (lev) lines.push(`  Leveling:\n      ${lev}`);
@@ -209,6 +216,40 @@ function buildPerSectionEvidenceBlock(config, sessionState) {
   return lines.join('\n');
 }
 
+function buildContractBlock(sessionState) {
+  const c = sessionState?.requirements_contract;
+  if (!c || !c.locked) {
+    return 'REQUIREMENTS CONTRACT: not locked during the session (red signal — candidate did not converge on a contract).';
+  }
+  const lines = [
+    `REQUIREMENTS CONTRACT (locked at turn ${c.locked_at_turn ?? '?'}):`,
+    `  Functional:     ${(c.functional || []).join('; ') || '(none)'}`,
+    `  Non-functional: ${(c.non_functional || []).join('; ') || '(none)'}`,
+    `  In scope:       ${(c.in_scope || []).join('; ') || '(none)'}`,
+    `  Out of scope:   ${(c.out_of_scope || []).join('; ') || '(none)'}`,
+  ];
+  return lines.join('\n');
+}
+
+function buildBreadthSummaryBlock(config, sessionState) {
+  const required = Array.isArray(config?.required_breadth_components)
+    ? config.required_breadth_components
+    : [];
+  if (required.length === 0) return '';
+  const mentioned = Array.isArray(sessionState?.breadth_coverage?.components_mentioned)
+    ? sessionState.breadth_coverage.components_mentioned
+    : [];
+  const missing = Array.isArray(sessionState?.breadth_coverage?.components_missing)
+    ? sessionState.breadth_coverage.components_missing
+    : required.filter((c) => !mentioned.includes(c));
+  return [
+    `BREADTH COVERAGE (final):`,
+    `  Required (${required.length}): ${required.join(', ')}`,
+    `  Mentioned (${mentioned.length}): ${mentioned.join(', ') || '(none)'}`,
+    `  Missing (${missing.length}): ${missing.join(', ') || '(full coverage)'}`,
+  ].join('\n');
+}
+
 function buildMomentumTrajectoryBlock(sessionState) {
   const evalHistory = Array.isArray(sessionState?.eval_history) ? sessionState.eval_history : [];
   if (evalHistory.length === 0) return '(no eval history captured)';
@@ -224,9 +265,9 @@ function buildMomentumTrajectoryBlock(sessionState) {
   return compact.slice(-30).join('\n');
 }
 
-/* --------------------------- v3 debrief prompt ----------------------- */
+/* --------------------------- v5 debrief prompt ----------------------- */
 
-export function buildV3DebriefPrompt(config, sessionState, interview) {
+export function buildV5DebriefPrompt(config, sessionState, interview) {
   const sections = Array.isArray(config?.sections) ? config.sections : [];
   const totalSections = sections.length || 1;
 
@@ -263,6 +304,9 @@ export function buildV3DebriefPrompt(config, sessionState, interview) {
 
   const evidenceBlock = buildPerSectionEvidenceBlock(config, sessionState);
   const momentumBlock = buildMomentumTrajectoryBlock(sessionState);
+  const contractBlock = buildContractBlock(sessionState);
+  const breadthSummary = buildBreadthSummaryBlock(config, sessionState);
+  const finalVerdictTraj = String(sessionState?.verdict_trajectory || 'insufficient_data');
 
   return `Generate an interview debrief report. Return JSON only.
 
@@ -274,6 +318,11 @@ ${problemBrief ? `problem_brief="${problemBrief}"` : ''}
 duration=${totalMinutes}min (planned ${expectedMinutes}min)
 completion=${completionPct}%
 sections_with_evidence=${sectionsAttempted}/${totalSections}
+final_verdict_trajectory=${finalVerdictTraj}  (Planner's running call; use as a hint, still apply the VERDICT RULES below)
+
+${contractBlock}
+
+${breadthSummary}
 
 PER-SECTION EVIDENCE — flags emitted by the live Planner during the interview, plus the bar definitions for context:
 
@@ -542,7 +591,7 @@ export function applyDebriefVerdictGuards(debrief, interview, coverageOverride) 
 
 /* --------------------------- Main entry ------------------------------ */
 
-async function generateV3StructuredDebrief(interview) {
+async function generateV5StructuredDebrief(interview) {
   const config = getInterviewConfig(interview);
   const sections = Array.isArray(config?.sections) ? config.sections : [];
   const sectionIds = sections.map((s) => s.id).filter(Boolean);
@@ -570,7 +619,7 @@ async function generateV3StructuredDebrief(interview) {
     return { id, name: s.label || s.name || id, status };
   });
 
-  const prompt = buildV3DebriefPrompt(config, ls, interview);
+  const prompt = buildV5DebriefPrompt(config, ls, interview);
 
   const raw = await invokeLLM({
     prompt,
@@ -582,7 +631,7 @@ async function generateV3StructuredDebrief(interview) {
 }
 
 export async function generateStructuredDebrief(interview) {
-  return generateV3StructuredDebrief(interview);
+  return generateV5StructuredDebrief(interview);
 }
 
 export async function extractHistorySignals(interview) {

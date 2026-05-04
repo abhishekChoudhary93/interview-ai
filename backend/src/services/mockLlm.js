@@ -112,7 +112,8 @@ export function mockInvokeLLM(input) {
  */
 export async function* mockStreamLLM(input) {
   const sys = joinedSystemContent(input);
-  const prefix = sys.includes('Persona') ? '[Mock interviewer] ' : '[Mock] ';
+  const isExecutorSystemPrompt = sys.includes('What You Are') || sys.includes('Persona');
+  const prefix = isExecutorSystemPrompt ? '[Mock interviewer] ' : '[Mock] ';
   const reply =
     'Got it — let me push on that. Could you walk me through the read/write ratio you are assuming, and how that shapes your storage choice?';
   const chunks = [prefix, ...reply.split(/(\s+)/)];

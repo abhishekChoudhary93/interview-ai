@@ -3,13 +3,6 @@
   "target_level": "SR_SDE",
   "total_minutes": 50,
 
-  "interviewer": {
-    "name": "Alex",
-    "title": "Staff Software Engineer",
-    "company": "Amazon",
-    "style_note": "rigorous, warm, fast on push-back; tends to ask follow-ups quietly rather than restating"
-  },
-
   "problem": {
     "title": "Design a URL Shortener",
     "brief": "Design a URL shortener like bit.ly. Users submit long URLs and get back a short slug; anyone who visits that slug later gets redirected to the original URL.",
@@ -195,17 +188,6 @@
       "budget_minutes": 8,
       "goal": "Define the redirect SLO, how it's monitored, and what happens when dependencies fail",
       "objectives": "Concrete SLO metric named; monitoring signal described; failure behavior and fallback articulated",
-      "good_signals": [
-        "Names a specific SLO metric (p99 redirect latency, availability %)",
-        "Proposes a concrete monitoring signal, not just 'use metrics'",
-        "Describes failure behavior and fallback explicitly"
-      ],
-      "weak_signals": [
-        "Vague on monitoring ('we'd add some dashboards')",
-        "No SLO defined",
-        "No failure or degraded-mode reasoning"
-      ],
-      "faang_bar": "Candidate defines a concrete redirect SLO, names the specific signal they'd alert on, and describes degraded-mode behavior when a dependency fails.",
       "exit_gate": {
         "require_any": ["slo_defined", "alert_signal", "failure_mode"],
         "description": "At least one operations signal collected."

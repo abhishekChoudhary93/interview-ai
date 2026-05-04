@@ -104,10 +104,10 @@ npm run validate:templates
 | [backend/src/services/interviewConverse.js](backend/src/services/interviewConverse.js) | Streaming interviewer reply |
 | [backend/src/services/interviewEvalCapture.js](backend/src/services/interviewEvalCapture.js) | Background per-turn JSON eval |
 | [backend/src/services/interviewSessionService.js](backend/src/services/interviewSessionService.js) | Session lifecycle (start/turn/end) |
-| [backend/src/services/interviewConfig.js](backend/src/services/interviewConfig.js) | Single-problem v3 config loader |
-| [backend/src/interview-config/url_shortener.json](backend/src/interview-config/url_shortener.json) | The interview problem definition (single source of truth) |
-| [BRAIN.md](BRAIN.md) | Canonical map of where the orchestrated-interview logic lives — read before changing prompts, substrate state, or the debrief pipeline |
-| [BACKLOG.md](BACKLOG.md) | Deferred discipline work (LLM-paste detection, JS substrate backstops for Planner rules, validator extensions) |
+| [backend/src/services/interviewConfig.js](backend/src/services/interviewConfig.js) | Single-problem v5 config loader |
+| [backend/src/interview-config/url_shortener.json](backend/src/interview-config/url_shortener.json) | The v5 interview problem definition (single source of truth — sections, signals, leveling, scope, scale_facts, fault_scenarios, raise_stakes_prompts, **required_breadth_components**, **variant_scenarios**, deep_dive_topics) |
+| [BRAIN.md](BRAIN.md) | Canonical map of the v5 interview engine — read before changing prompts, substrate state, or the debrief pipeline |
+| [BACKLOG.md](BACKLOG.md) | Deferred discipline work (LLM-paste detection, planner-side scope-question priority, multi-problem) |
 | [docker-compose.yml](docker-compose.yml) | **Local:** Mongo + backend + Vite (HMR bind mount) |
 | [docker-compose.prod.yml](docker-compose.prod.yml) | **Production:** backend + nginx static frontend; external MongoDB |
 | [`.env.local`](.env.local) / [`.env.production`](.env.production) | Per-environment env files |

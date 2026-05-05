@@ -150,39 +150,132 @@ test('Nudging vs. Challenging block is present', () => {
   assert.match(prompt, /# Nudging vs\. Challenging/);
 });
 
-test('Five Anti-Patterns block is present (Seeding, Bundling, Math correction, Echoing, Meta-leaking)', () => {
+test('Six Anti-Patterns block is present (Seeding, Bundling, Math correction, Echoing, Meta-leaking, Capitulation)', () => {
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
     config,
     interview: { interview_type: 'system_design', interview_mode: 'chat' },
     sessionState: {},
   });
-  assert.match(prompt, /# Five Anti-Patterns/);
+  assert.match(prompt, /# Six Anti-Patterns/);
   assert.match(prompt, /Seeding/);
   assert.match(prompt, /Bundling/);
   assert.match(prompt, /Math correction/);
   assert.match(prompt, /Echoing/);
-  // 5th anti-pattern (Meta-leaking) added in v5.1 hardening.
   assert.match(prompt, /5\. Meta-leaking/);
   assert.match(prompt, /\(Note: \.\.\.\)/);
   assert.match(prompt, /Directive was to/);
-  // Anti-pattern #2 Bundling now carries the worked transcript-style BAD example.
   assert.match(prompt, /period followed by a fresh question/);
   assert.match(prompt, /Now walk me through high-level architecture/);
+  // 6th anti-pattern (Capitulation) added to fix the T7/T9 cascade where
+  // the Executor self-advanced phases and fabricated a contract-closing
+  // summary against an explicit LET_LEAD / CHALLENGE_ASSUMPTION directive.
+  assert.match(prompt, /6\. Capitulation/);
+  assert.match(prompt, /the directive wins/i);
+  assert.match(prompt, /the conversation is wrong, not the directive/);
 });
 
-test('Requirements Contract Closing block is present (the only proactive summary)', () => {
+test('Requirements Contract Closing block is present ONLY when directive is HAND_OFF leaving requirements', () => {
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
     config,
     interview: { interview_type: 'system_design', interview_mode: 'chat' },
-    sessionState: {},
+    sessionState: {
+      next_directive: {
+        move: 'HAND_OFF',
+        difficulty: 'L2',
+        recommended_section_focus_id: 'high_level_design',
+        recommended_focus: 'okay, I think I\'ve got the picture — let\'s get into the design.',
+        momentum: 'warm',
+        bar_trajectory: 'flat',
+        time_status: 'on_track',
+      },
+    },
   });
   assert.match(prompt, /# Requirements Contract Closing/);
   assert.match(prompt, /In scope:/);
   assert.match(prompt, /Out of scope:/);
   assert.match(prompt, /NFRs:/);
   assert.match(prompt, /Is that a fair picture\?/);
+});
+
+test('Requirements Contract Closing block is OMITTED when directive is LET_LEAD (the T7 fabrication fix)', () => {
+  // T7 trace: directive was LET_LEAD with empty focus and an empty contract.
+  // Prior to this fix, the closing template was always present in the prompt
+  // and the Executor reached for it under conversational pressure, fabricating
+  // scope items the candidate had not agreed to. The block must NOT render.
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {
+      next_directive: {
+        move: 'LET_LEAD',
+        difficulty: 'L2',
+        recommended_section_focus_id: 'requirements',
+        recommended_focus: '',
+        momentum: 'warm',
+        bar_trajectory: 'flat',
+        time_status: 'on_track',
+      },
+    },
+  });
+  assert.doesNotMatch(prompt, /# Requirements Contract Closing/);
+  assert.doesNotMatch(prompt, /Is that a fair picture\?/);
+});
+
+test('Requirements Contract Closing block is OMITTED for non-HAND_OFF moves (CHALLENGE_ASSUMPTION, NUDGE_BREADTH, GO_DEEPER, etc.)', () => {
+  const config = loadInterviewConfig();
+  for (const move of ['CHALLENGE_ASSUMPTION', 'NUDGE_BREADTH', 'GO_DEEPER', 'ANSWER_AND_RELEASE', 'INJECT_FAULT']) {
+    const prompt = buildSystemPrompt({
+      config,
+      interview: { interview_type: 'system_design', interview_mode: 'chat' },
+      sessionState: {
+        next_directive: {
+          move,
+          difficulty: 'L2',
+          recommended_section_focus_id: 'requirements',
+          recommended_focus: 'irrelevant',
+          momentum: 'warm',
+          bar_trajectory: 'flat',
+          time_status: 'on_track',
+        },
+      },
+    });
+    assert.doesNotMatch(prompt, /# Requirements Contract Closing/, `Closing block leaked into ${move} prompt`);
+  }
+});
+
+test('Requirements Contract Closing block is OMITTED on HAND_OFF that stays IN requirements (defensive)', () => {
+  // A HAND_OFF whose target section is still "requirements" is not a hand-off
+  // OUT of requirements — it shouldn't trigger the closing template either.
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {
+      next_directive: {
+        move: 'HAND_OFF',
+        difficulty: 'L2',
+        recommended_section_focus_id: 'requirements',
+        recommended_focus: 'noop',
+        momentum: 'warm',
+        bar_trajectory: 'flat',
+        time_status: 'on_track',
+      },
+    },
+  });
+  assert.doesNotMatch(prompt, /# Requirements Contract Closing/);
+});
+
+test('Requirements Contract Closing block is OMITTED when next_directive is null (opening turn)', () => {
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {},
+  });
+  assert.doesNotMatch(prompt, /# Requirements Contract Closing/);
 });
 
 /* --------------------------- v5 reference data ---------------------- */
@@ -348,6 +441,124 @@ test('Directive block emits answer_only instruction when answer_only=true', () =
   assert.match(prompt, /Do NOT append a follow-up probe/);
 });
 
+/* --------------------------- Directive Supremacy (v5.2) -------------- */
+
+test('Directive block carries DIRECTIVE SUPREMACY header with conversation-overrides-directive framing', () => {
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {
+      next_directive: {
+        move: 'CHALLENGE_ASSUMPTION',
+        difficulty: 'L2',
+        recommended_section_focus_id: 'requirements',
+        recommended_focus: 'Before we get to architecture — what NFRs are you targeting?',
+        momentum: 'warm',
+        bar_trajectory: 'flat',
+        time_status: 'on_track',
+      },
+    },
+  });
+  assert.match(prompt, /READ LAST, OBEY FIRST/);
+  assert.match(prompt, /DIRECTIVE SUPREMACY/);
+  assert.match(prompt, /the directive overrides both/);
+  assert.match(prompt, /you have failed the turn/);
+});
+
+test('Directive block carries explicit LET_LEAD per-move rule (no summary, no redirect, no phase close)', () => {
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {
+      next_directive: {
+        move: 'LET_LEAD',
+        difficulty: 'L2',
+        recommended_section_focus_id: 'requirements',
+        recommended_focus: '',
+        momentum: 'warm',
+        bar_trajectory: 'flat',
+        time_status: 'on_track',
+      },
+    },
+  });
+  assert.match(prompt, /Move=LET_LEAD: minimal natural ack only/);
+  assert.match(prompt, /Do NOT summarize/);
+  assert.match(prompt, /Do NOT redirect/);
+  assert.match(prompt, /Do NOT close a phase/);
+  assert.match(prompt, /letting the candidate drive on purpose/);
+});
+
+test('Directive block carries explicit ANSWER_AND_RELEASE per-move rule (one fact, no probe, no transition phrase)', () => {
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {
+      next_directive: {
+        move: 'ANSWER_AND_RELEASE',
+        difficulty: 'L1',
+        recommended_section_focus_id: 'requirements',
+        recommended_focus: 'About 500k redirects per second globally at peak.',
+        momentum: 'warm',
+        bar_trajectory: 'flat',
+        time_status: 'on_track',
+      },
+    },
+  });
+  assert.match(prompt, /Move=ANSWER_AND_RELEASE: give exactly the one fact in the Focus, then stop/);
+  assert.match(prompt, /Do NOT add a transition phrase/);
+});
+
+test('Directive block carries NO UNAUTHORIZED SECTION ADVANCEMENT rule with the actual section name', () => {
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {
+      next_directive: {
+        move: 'CHALLENGE_ASSUMPTION',
+        difficulty: 'L2',
+        recommended_section_focus_id: 'requirements',
+        recommended_focus: 'what NFRs are you targeting?',
+        momentum: 'warm',
+        bar_trajectory: 'flat',
+        time_status: 'on_track',
+      },
+    },
+  });
+  assert.match(prompt, /NO UNAUTHORIZED SECTION ADVANCEMENT/);
+  // The candidate's section is named explicitly so the LLM can't claim it didn't know.
+  assert.match(prompt, /Your section this turn is requirements/);
+  assert.match(prompt, /you hold the line/);
+  assert.match(prompt, /Section transitions belong exclusively to HAND_OFF directives/);
+  // The Section: line in the metadata block carries the same id.
+  assert.match(prompt, /Section:\s+requirements/);
+});
+
+test('Directive block carries NO PROACTIVE SUMMARIZATION rule (T7 fabrication fix)', () => {
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {
+      next_directive: {
+        move: 'LET_LEAD',
+        difficulty: 'L2',
+        recommended_section_focus_id: 'requirements',
+        recommended_focus: '',
+        momentum: 'warm',
+        bar_trajectory: 'flat',
+        time_status: 'on_track',
+      },
+    },
+  });
+  assert.match(prompt, /NO PROACTIVE SUMMARIZATION/);
+  assert.match(prompt, /You do NOT proactively summarize/);
+  assert.match(prompt, /its absence means do not summarize/);
+});
+
 /* --------------------------- Opening Protocol ----------------------- */
 
 test('Opening Protocol (T1 only): renders the reference text verbatim regardless of candidate input', () => {
@@ -444,7 +655,7 @@ test('Canvas snapshot with content marks the diagram as the source of truth', ()
 
 /* --------------------------- Section ordering / safety ------------- */
 
-test('Sections appear in the correct v5.1 order (Hard Output Rules + Anti-Patterns read EARLY, before Opening + Directive)', () => {
+test('Sections appear in the correct v5.2 order (Directive renders LAST, after all reference data and canvas)', () => {
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
     config,
@@ -454,25 +665,32 @@ test('Sections appear in the correct v5.1 order (Hard Output Rules + Anti-Patter
   const idxRole = prompt.indexOf('# What You Are');
   const idxHumanFeel = prompt.indexOf('# The Human Feel');
   const idxHardRules = prompt.indexOf('# Hard Output Rules');
-  const idxAnti = prompt.indexOf('# Five Anti-Patterns');
+  const idxAnti = prompt.indexOf('# Six Anti-Patterns');
   const idxOpening = prompt.indexOf('# Opening Protocol');
-  const idxDirective = prompt.indexOf('# Directive');
-  const idxContractClose = prompt.indexOf('# Requirements Contract Closing');
   const idxSectionPlan = prompt.indexOf('# Section Plan');
-  const idxCanvas = prompt.indexOf("Candidate's current diagram");
+  const idxCanvas = prompt.indexOf("# Candidate's current diagram");
+  const idxDirective = prompt.indexOf('# Directive');
 
   assert.ok(idxRole >= 0);
   assert.ok(idxRole < idxHumanFeel);
-  // v5.1: Hard Output Rules + Anti-Patterns now appear right after Human Feel,
-  // BEFORE Opening Protocol / Directive / Move guidance — so the model has
-  // read the bundling and earn-before-name rules before any move-rendering.
+  // Hard Output Rules + Anti-Patterns appear right after Human Feel, BEFORE
+  // Opening Protocol — so the model has read the bundling and
+  // earn-before-name rules before any move-rendering.
   assert.ok(idxHumanFeel < idxHardRules, 'Hard Output Rules must follow Human Feel');
   assert.ok(idxHardRules < idxAnti, 'Anti-Patterns must follow Hard Output Rules');
   assert.ok(idxAnti < idxOpening, 'Anti-Patterns must precede Opening Protocol');
-  assert.ok(idxOpening < idxDirective);
-  assert.ok(idxDirective < idxContractClose);
-  assert.ok(idxContractClose < idxSectionPlan);
-  assert.ok(idxSectionPlan < idxCanvas);
+  // v5.2: the Directive is now the LAST block in the prompt. Reference data
+  // (Section Plan, Canvas, etc.) renders before the Directive so recency bias
+  // works FOR the operative instruction, not against it. This is the fix for
+  // the T9 failure where the buried-mid-prompt directive was overridden by
+  // chat-history conversational momentum.
+  assert.ok(idxOpening < idxSectionPlan, 'Opening Protocol must precede Section Plan');
+  assert.ok(idxSectionPlan < idxCanvas, 'Section Plan must precede Canvas');
+  assert.ok(idxCanvas < idxDirective, 'Canvas must precede Directive (Directive renders LAST)');
+  // The Directive really must be the last block — nothing meaningful after it.
+  assert.ok(idxDirective > 0, 'Directive must be present');
+  const tailFromDirective = prompt.slice(idxDirective);
+  assert.doesNotMatch(tailFromDirective, /# (Section Plan|Candidate's current diagram|Hard Output Rules|Six Anti-Patterns|Opening Protocol|Difficulty Register|Channel|Problem|Scope|Scale Facts|Fault Scenarios|Raise-Stakes Prompts|Variant Scenarios|Requirements Contract Closing)/);
 });
 
 test('Prompt under 19,000 characters with a complete v5 directive (token budget sanity)', () => {

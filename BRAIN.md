@@ -379,27 +379,33 @@ Per turn, mutates `session_state`:
 
 ## 7. Executor prompt (`interviewSystemPrompt.js → buildSystemPrompt`)
 
-Block order (v5 PART 2):
+Block order (v5.2 — Directive renders LAST, Contract Closing is conditional):
 
 1. **What You Are** — `You are {interviewer.name}, {title} at {company}. ...` Style note appended if present.
 2. **The Human Feel — What This Actually Means** — what a real interviewer does.
-3. **Opening Protocol** — always rendered. Embeds `config.problem.opening_prompt` verbatim as DATA. Defines Case A (procedural ack → render verbatim) and Case B (substance → engage directly: ANSWER_AND_RELEASE on one scope question OR ack-and-let-them-continue). Tells the LLM to ignore this section once a Planner directive is present.
-4. **Directive** — always rendered. The Planner's last emission as `Move / Difficulty / Focus / Momentum / Bar trajectory / Time / Pace` plus the **active move's `MOVE_GUIDANCE` row only** (token-efficient — ships only the relevant row). When `next_directive` is null, the body is a literal placeholder line `(no directive — opening turn; follow the Opening Protocol section above)` so the LLM knows the OPENING PROTOCOL is active.
-5. **Requirements Contract Closing** — the only place the Executor proactively summarizes. Used when the Planner emits `HAND_OFF` out of the requirements section. Template: `"Okay, let me make sure I've got the scope right. You're building [...]. In scope: [...]. Out of scope: [...]. NFRs: [...]. Is that a fair picture?"`.
-6. **Difficulty Register** — L1 Exploratory / L2 Rigorous / L3 Exacting.
-7. **Hard Output Rules** — prose only, 3-sentence cap, one question per turn, no praise, no "interesting question", no emotes, no passive surrender, no scale numbers unless asked, math-error handling, diagram sync, long-response handling.
+3. **Hard Output Rules** — prose only, 3-sentence cap, one question per turn, no praise, no "interesting question", no emotes, no passive surrender, no scale numbers unless asked, math-error handling, diagram sync, long-response handling. Plus CORE RULE 1 (ONE TURN = ONE MOVE) and CORE RULE 2 (EARN BEFORE YOU NAME).
+4. **Six Anti-Patterns** — Seeding, Bundling, Math correction, Echoing, Meta-leaking, **Capitulation** (v5.2 NEW — following the candidate's lead when the directive says hold). Capitulation is the named failure mode behind the T7 fabricated-contract / T9 self-advance cascade — the candidate sounds ready for the next phase but the directive isn't HAND_OFF, and the executor caves.
+5. **Opening Protocol** — always rendered. Embeds `config.problem.opening_prompt` verbatim as DATA. Defines Case A (procedural ack → render verbatim) and Case B (substance → engage directly: ANSWER_AND_RELEASE on one scope question OR ack-and-let-them-continue). Tells the LLM to ignore this section once a Planner directive is present.
+6. **Requirements Contract Closing** (v5.2: CONDITIONAL) — only injected when `sessionState.next_directive.move === 'HAND_OFF'` AND `recommended_section_focus_id !== 'requirements'`. On every other turn the closing template is OMITTED from the prompt entirely. This is the fix for the T7 trace where, under a `LET_LEAD` directive with an empty contract, the Executor reached for the closing template and fabricated scope items the candidate had not agreed to. The LLM cannot reach for a template that isn't in the prompt. Gated by `shouldIncludeContractClosingBlock(sessionState)` in `interviewSystemPrompt.js`. Template body when present: `"Okay, let me make sure I've got the scope right. You're building [...]. In scope: [...]. Out of scope: [...]. NFRs: [...]. Is that a fair picture?"`.
+7. **Difficulty Register** — L1 Exploratory / L2 Rigorous / L3 Exacting.
 8. **What "Conversational" Means in Practice** — the v5 example pairs.
 9. **Nudging vs. Challenging** — when to use which energy.
-10. **Four Anti-Patterns** — Seeding, Bundling, Math correction, Echoing.
-11. **Channel** — chat (typing/written) vs voice (TTS-spoken).
-12. **Problem** — `config.problem.title + brief`.
-13. **Scope** — `config.scope.{in_scope, out_of_scope}`.
-14. **Scale Facts** — `config.scale_facts[]` (one per turn, only when asked).
-15. **Fault Scenarios** — `config.fault_scenarios[]` (used only on `INJECT_FAULT`).
-16. **Raise-Stakes** — `config.raise_stakes_prompts[]` (used only on `RAISE_STAKES`).
-17. **Variant Scenarios** (v5 NEW) — `config.variant_scenarios[]` (used only on `INJECT_VARIANT`).
-18. **Section Plan** — `config.sections[]` listing with `(Nm)` budgets. Reminds the Executor: **the Planner controls all transitions**.
-19. **Candidate's current diagram** — Excalidraw `canvas_text` if any, otherwise placeholder. Tells the LLM to never claim to see what's not in the block.
+10. **Channel** — chat (typing/written) vs voice (TTS-spoken).
+11. **Problem** — `config.problem.title + brief`.
+12. **Scope** — `config.scope.{in_scope, out_of_scope}`.
+13. **Scale Facts** — `config.scale_facts[]` (one per turn, only when asked).
+14. **Fault Scenarios** — `config.fault_scenarios[]` (used only on `INJECT_FAULT`).
+15. **Raise-Stakes** — `config.raise_stakes_prompts[]` (used only on `RAISE_STAKES`).
+16. **Variant Scenarios** (v5 NEW) — `config.variant_scenarios[]` (used only on `INJECT_VARIANT`).
+17. **Section Plan** — `config.sections[]` listing with `(Nm)` budgets. Reminds the Executor: **the Planner controls all transitions**.
+18. **Candidate's current diagram** — Excalidraw `canvas_text` if any, otherwise placeholder. Tells the LLM to never claim to see what's not in the block.
+19. **Directive** (v5.2: now LAST) — always rendered, but at the END of the prompt rather than mid-prompt. Recency bias works FOR the operative instruction rather than against it. Carries:
+   - **DIRECTIVE SUPREMACY** header (v5.2 NEW) — the candidate's most recent message and the Executor's own prior reply may pull toward a different topic; the directive overrides both.
+   - Per-move enforcement: `LET_LEAD` → minimal ack only, no summary / redirect / phase close; `ANSWER_AND_RELEASE` → one fact, no transition phrase, no follow-up probe; any other move → render the Focus.
+   - **NO UNAUTHORIZED SECTION ADVANCEMENT** — the explicit `recommended_section_focus_id` is named in the directive body. Section transitions belong exclusively to HAND_OFF directives.
+   - **NO PROACTIVE SUMMARIZATION** — explicitly cross-references the Contract Closing block's conditional presence. "Its absence means do not summarize."
+   - The Planner's last emission as `Move / Difficulty / Section / Focus / Momentum / Bar trajectory / Time / Pace` plus the **active move's `MOVE_GUIDANCE` row only** (token-efficient — ships only the relevant row).
+   - When `next_directive` is null, the body is a literal placeholder line `(no directive — opening turn; follow the Opening Protocol section above)` so the LLM knows the OPENING PROTOCOL is active.
 
 ### MOVE_GUIDANCE map (17 entries)
 
@@ -488,6 +494,8 @@ Caps: 12 unconsumed per section, 2 new probes per turn, 1 consumption per turn.
 | LET_LEAD ack instead of an expected probe | Previous directive carried `move=LET_LEAD` | Check `eval_history[]` last entry — was the latest directive really LET_LEAD? Tighten the Planner's STEP 7 / decision rules if it should have probed |
 | Opening reply ignores candidate's substantive first turn | Executor LLM mis-classified Case A/B in the OPENING PROTOCOL section | Inspect the executor trace (`debug_trace[].executor`); if substance was given and the LLM still recited the verbatim problem statement, sharpen the Case B language in `formatOpeningProtocol` |
 | Reply bundles a scope answer + a transition phrase | Executor ignored the ANSWER_AND_RELEASE strictness | `eval_history[].notes` and the Planner's raw output JSON; check the HAND_OFF GUARD wasn't bypassed |
+| Executor fabricates a Requirements Contract summary under LET_LEAD or other non-HAND_OFF directive | Conditional Contract Closing block leaked into the prompt OR the LLM ignored the conditional | First check `shouldIncludeContractClosingBlock(sessionState)` returned the right value. Inspect `eval_history[]` — was the active directive really LET_LEAD when the closing summary fired? If the block was correctly absent and the executor still summarized, sharpen ANTI_PATTERN #6 (Capitulation) and the DIRECTIVE block's "NO PROACTIVE SUMMARIZATION" line. Cascade prevention: a fabricated contract on turn N pollutes the executor's own chat history and biases turn N+1 toward an unauthorized HLD self-advance. |
+| Executor self-advances sections (e.g. moves into HLD when directive said CHALLENGE_ASSUMPTION on requirements) | Executor ignored the DIRECTIVE SUPREMACY / NO UNAUTHORIZED SECTION ADVANCEMENT block | Inspect the rendered Directive block — is `Section: <id>` present and correct? Is the recommended_section_focus_id flowing through to the prompt? If the directive body is correct and the LLM still self-advanced, this is Capitulation (anti-pattern #6) — sharpen the section-advancement rule in `formatDirective`. |
 | Interview ends too early | Planner emitted `interview_done=true` or `move=CLOSE`; 45-min substrate backstop should have caught it | `eval_history[]` last row; check `close_blocked_reason`; or HARD_TURN_CAP hit (60 interviewer turns) |
 | Debrief says "Incomplete — Cannot Assess" | Total session under 15 minutes OR section coverage <40% | `recordSessionEndMetadata` → `applyDebriefVerdictGuards` |
 | Frontend doesn't show interviewer name | `interview.interview_config.interviewer` missing — config not snapshotted | Confirm `startInterviewSession` ran and persisted `interview_config` |
@@ -516,7 +524,9 @@ When you want to change interviewer behavior, prefer config edits over prompt ed
 | Difficulty register wording (how L3 sounds vs L1) | `interviewSystemPrompt.js` → `DIFFICULTY_REGISTER` |
 | Per-move rendering rules | `interviewSystemPrompt.js` → `MOVE_GUIDANCE` |
 | Opening protocol Case A / Case B language | `interviewSystemPrompt.js` → `formatOpeningProtocol` |
-| Anti-pattern lines | `interviewSystemPrompt.js` → `HARD_OUTPUT_RULES`, `ANTI_PATTERNS` |
+| Anti-pattern lines | `interviewSystemPrompt.js` → `HARD_OUTPUT_RULES`, `ANTI_PATTERNS` (Capitulation is anti-pattern #6) |
+| Conditional Requirements Contract Closing block (gate: HAND_OFF leaving requirements) | `interviewSystemPrompt.js` → `shouldIncludeContractClosingBlock` |
+| Directive Supremacy / NO UNAUTHORIZED SECTION ADVANCEMENT / NO PROACTIVE SUMMARIZATION rules (executor side) | `interviewSystemPrompt.js` → `formatDirective` |
 | HAND_OFF GUARD conditions, transition-phrase prohibition | `interviewEvalCapture.js` → `DECISION_ALGORITHM` |
 | Thread depth cap (rabbit-hole prevention) | `interviewEvalCapture.js` → `THREAD_DEPTH_RULE` (soft 3, hard via PIVOT_ANGLE prompt rule) |
 | Breadth-vs-depth discipline | `interviewEvalCapture.js` → `BREADTH_VS_DEPTH_BLOCK` |

@@ -217,13 +217,14 @@ Challenging — used to test depth on something specific. Deliberate pressure.
 
 Know which one you're doing. Using challenge energy for a breadth nudge feels harsh. Using nudge energy for a depth challenge lets the candidate off the hook.`;
 
-const ANTI_PATTERNS = `# Five Anti-Patterns — Hard Prohibitions
+const ANTI_PATTERNS = `# Six Anti-Patterns — Hard Prohibitions
 
 1. Seeding — naming a component, technology, or topic the candidate hasn't raised. Even framed as "have you thought about X?" — forbidden. This erases the signal that they didn't raise it themselves.
 2. Bundling — putting more than one move in one turn. Acknowledge OR summarize OR ask, never two-of-three. The biggest tell: any reply that contains a period followed by a fresh question (e.g. "Custom slugs and TTLs are in scope. Now walk me through high-level architecture.") is bundling. Cut the second move.
 3. Math correction — stating the right number when their estimate is off. Ask "walk me through that calculation" instead.
 4. Echoing — restating their mechanism back at them ("so X works by caching Y") and then probing. Ask directly; they know what they said.
-5. Meta-leaking — narrating your own reasoning to the candidate, in any form. No "(Note: ...)", no "*(Observing ...)*", no "I'm anchoring on...", no "Directive was to...". The candidate must never see why you chose this question — only the question.`;
+5. Meta-leaking — narrating your own reasoning to the candidate, in any form. No "(Note: ...)", no "*(Observing ...)*", no "I'm anchoring on...", no "Directive was to...". The candidate must never see why you chose this question — only the question.
+6. Capitulation — following the candidate's lead when the directive says hold. The candidate says "let's start the design" and you self-advance to high-level design even though the directive said CHALLENGE_ASSUMPTION on requirements — that is capitulation. The candidate sounds finished and you fire a contract-closing summary even though the directive said LET_LEAD — that is capitulation. The candidate's most recent message and your prior reply may pull you toward a topic the directive hasn't authorized; the directive wins. This is the failure mode the Planner exists to prevent. If the conversation feels ready for the next phase but the directive is not HAND_OFF, the conversation is wrong, not the directive.`;
 
 /* --------------------------- Format helpers ------------------------- */
 
@@ -375,15 +376,31 @@ function formatDirective(sessionState) {
 
   const move = String(d.move || '').toUpperCase();
   const difficulty = String(d.difficulty || 'L2');
+  const sectionFocus = d.recommended_section_focus_id || '';
   const moveLine = MOVE_GUIDANCE[move] || `Render the move "${move}" in 1-3 sentences anchored on the candidate's words.`;
   const answerOnlyLine = d.answer_only
     ? `\nThe candidate asked a direct question — ANSWER_AND_RELEASE: give exactly the one fact and STOP. Do NOT append a follow-up probe.`
     : '';
 
   return [
-    '# Directive (your move this turn)',
+    '# Directive (your move this turn) — READ LAST, OBEY FIRST',
+    '',
+    'DIRECTIVE SUPREMACY.',
+    'The Move and Focus below ARE your reply this turn. The candidate\'s most recent message and your own prior reply may pull you toward a different topic; the directive overrides both. If your one move does not anchor on the Focus, you have failed the turn — even when the conversation seems to want something else.',
+    '',
+    '  - Move=LET_LEAD: minimal natural ack only ("mhm", "okay", "go on") or stay silent. Do NOT summarize. Do NOT redirect. Do NOT close a phase. Do NOT introduce new content. The Planner is letting the candidate drive on purpose.',
+    '  - Move=ANSWER_AND_RELEASE: give exactly the one fact in the Focus, then stop. Do NOT append a follow-up probe. Do NOT add a transition phrase. The Planner gives you the next question on the next turn.',
+    '  - Any other Move: render the Focus in 1-3 sentences, in persona, anchored on what the candidate said.',
+    '',
+    'NO UNAUTHORIZED SECTION ADVANCEMENT.',
+    `Your section this turn is ${sectionFocus || '(unspecified — hold the current section)'}. You may NOT change sections. Even if the candidate asks "can we move to the design now?" — if Move is anything other than HAND_OFF, you hold the line. Acknowledge minimally, render the Focus, do NOT pivot phases. Section transitions belong exclusively to HAND_OFF directives.`,
+    '',
+    'NO PROACTIVE SUMMARIZATION.',
+    'You do NOT proactively summarize scope, requirements, or any prior content unless the Move is HAND_OFF leaving requirements (in which case the Requirements Contract Closing section will be present in this prompt — its absence means do not summarize).',
+    '',
     `Move:        ${move}`,
     `Difficulty:  ${difficulty}`,
+    `Section:     ${sectionFocus || '(unspecified)'}`,
     `Focus:       "${d.recommended_focus || ''}"`,
     `Momentum:    ${d.momentum || 'warm'}    Bar trajectory: ${d.bar_trajectory || 'flat'}    Time: ${d.time_status || 'on_track'}`,
     d.response_pace ? `Pace:        ${d.response_pace}` : '',
@@ -420,19 +437,51 @@ function formatCanvasSnapshot(interview) {
 }
 
 /**
+ * Should the Requirements Contract Closing template appear in this turn's
+ * prompt? Only when the Planner is explicitly handing OFF out of the
+ * requirements section. On every other turn the block is OMITTED — the
+ * Executor cannot reach for a closing template that isn't in the prompt.
+ *
+ * This is the fix for the T7 fabricated-contract failure mode where, under
+ * a LET_LEAD directive, the Executor emitted a contract-closing summary it
+ * was never authorized to produce.
+ */
+function shouldIncludeContractClosingBlock(sessionState) {
+  const d = sessionState?.next_directive;
+  if (!d) return false;
+  const move = String(d.move || '').toUpperCase();
+  if (move !== 'HAND_OFF') return false;
+  const focus = String(d.recommended_section_focus_id || '').toLowerCase();
+  return focus !== '' && focus !== 'requirements';
+}
+
+/**
  * Compose the full system prompt.
+ *
+ * Block order is deliberate. The Directive renders LAST (after all
+ * reference data and the canvas snapshot) so that recency bias works
+ * FOR the operative instruction rather than against it. Reference data
+ * (scope, scale facts, fault scenarios, etc.) is just lookup material;
+ * the Directive is the actual move for this turn.
+ *
+ * The Requirements Contract Closing block is conditionally injected
+ * only when the active Move is a HAND_OFF leaving requirements
+ * (see shouldIncludeContractClosingBlock). On every other turn the
+ * Executor sees no closing template at all.
+ *
  * @param {{ config: object, interview: object, sessionState?: object }} args
  * @returns {string}
  */
 export function buildSystemPrompt({ config, interview, sessionState }) {
+  const includeContractClosing = shouldIncludeContractClosingBlock(sessionState);
+
   const sections = [
     formatRoleAndMission(config),
     HUMAN_FEEL_BLOCK,
     HARD_OUTPUT_RULES,
     ANTI_PATTERNS,
     formatOpeningProtocol(config),
-    formatDirective(sessionState),
-    REQUIREMENTS_CONTRACT_CLOSING_BLOCK,
+    includeContractClosing ? REQUIREMENTS_CONTRACT_CLOSING_BLOCK : null,
     DIFFICULTY_REGISTER,
     CONVERSATIONAL_BLOCK,
     NUDGING_VS_CHALLENGING_BLOCK,
@@ -445,6 +494,7 @@ export function buildSystemPrompt({ config, interview, sessionState }) {
     formatVariantScenariosReference(config),
     formatSectionPlan(config),
     formatCanvasSnapshot(interview),
+    formatDirective(sessionState),
   ].filter(Boolean);
 
   return sections.join('\n\n');

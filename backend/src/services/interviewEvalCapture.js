@@ -715,14 +715,78 @@ STEP 5 — CHECK PACE
   If suspiciously_fast for 2+ complex turns → INJECT_VARIANT
   If slow for 2+ turns → NARROW_SCOPE
 
-STEP 6 — CHECK SCALE FACT INJECTION
-  Scan recommended_focus for numbers from scale_facts.
-  If a number appears AND the candidate didn't ask → rewrite WITHOUT the number, OR use DRAW_NUMBERS.
-  Goal: if the candidate doesn't know the scale, that is signal. Don't hand them the number then ask how they'd handle it.
+STEP 6 — EARN BEFORE NAME (config-vocabulary check)
+  The injected INTERVIEW CONFIG block lists topics that ARE part of the interview. The rule is NOT to avoid them — it is to wait for the candidate to surface a topic before pushing on it. Once a topic is earned, push hard; that is the interview.
 
-STEP 7 — COMPUTE MOMENTUM + SET DIFFICULTY
+  Scan recommended_focus for ANY config-sourced vocabulary the candidate has not earned, in order of how often the LLM leaks each category:
 
-STEP 8 — SELECT MOVE
+    (a) Numbers from config.scale_facts          ("500k", "99.99%", "100ms", "1B", "100M")
+    (b) Items in config.required_breadth_components  ("caching layer", "id generation", "analytics counter", "ttl expiry handling")
+    (c) Topic labels in deep_dive_topics         ("consistent hashing", "horizontal scaling", "redirect critical path")
+    (d) Phrases in scope.in_scope / out_of_scope ("first-write-wins", "user accounts and authentication")
+    (e) signal_id labels from sections[].signals ("read_write_separation", "storage_justification", "slo_defined")
+    (f) Exact strings from fault_scenarios / raise_stakes_prompts / variant_scenarios
+
+  EARNED if ANY of these is true:
+    - The candidate has used that exact word/number/phrase in any prior turn this conversation, OR
+    - The candidate has drawn the underlying component / chosen the underlying strategy this conversation, OR
+    - The candidate explicitly asked for it ("is X in scope?", "how many users?", "what's the QPS?")
+
+  Carve-outs (the rule does not apply when):
+    - Move is ANSWER_AND_RELEASE in direct response to a candidate question
+    - Move is INJECT_FAULT / RAISE_STAKES / INJECT_VARIANT and the focus is grounded in components the candidate has drawn
+    - Move is HAND_OFF out of requirements (Requirements Contract Closing summary)
+
+  If unearned and no carve-out applies: REWRITE recommended_focus to be an OPEN question that invites the candidate to name the thing themselves.
+    - Missing component → NUDGE_BREADTH ("what else does this system need?")
+    - Missing number    → DRAW_NUMBERS ("can you put numbers on that?")
+    - Missing topic     → GO_DEEPER on something the candidate already raised
+    - Missing scope item → wait for them to surface it; don't seed
+
+  Once-earned: push HARD. The whole point of the interview is to test these topics.
+
+  BAD examples (each is a real seeding failure):
+    Scale:    "How do you handle 500k redirects/sec?"                    (candidate didn't raise the number)
+    Scale:    "Under 99.99% availability and 100ms p99, walk me through it." (three leaks at once)
+    Breadth:  "How does your caching layer handle TTL?"                   (candidate hasn't mentioned a cache)
+    Breadth:  "Walk me through the analytics counter."                    (component hasn't been raised)
+    Topic:    "Let's talk about your consistent hashing approach."        (deep-dive topic not earned)
+    Scope:    "How do first-write-wins collisions work in your design?"   (scope phrasing leaked before HLD)
+    Signal:   "Walk me through your read_write_separation."               (signal_id leaked verbatim)
+    Fault:    Verbatim copy of a fault_scenarios string instead of grounding it in the candidate's design
+
+  GOOD counterparts (open invitations OR engaging-once-earned):
+    Scale:    "What read load are you sizing for?"                        (open; lets them name the number)
+    Scale:    "What SLO are you targeting for redirects?"                 (asks them to name the target)
+    Breadth:  "What else does this system need?"                          (NUDGE_BREADTH; no naming)
+    Topic:    "You mentioned slug generation — how do you avoid collisions at scale?" (anchored on their words)
+    Once-earned (Breadth): candidate said "I'd add a Redis cache" → "How do you handle TTL and eviction in that cache?" (cache is now earned; TTL push is fair game)
+    Once-earned (Topic):   candidate said "I'll partition by hash of slug" → "What happens when you need to rebalance the partitions?" (rebalance push is fair game once they raised partitioning)
+    Once-earned (Scale):   candidate said "I'll target sub-100ms" → "How do you hit 100ms under spike?" (number is now theirs to defend)
+
+STEP 7 — ONE MOVE PER DIRECTIVE (no bundled focus)
+  recommended_focus must contain exactly ONE move's worth of guidance — one question, one acknowledgment, one summary, one fact. The Executor renders one turn per directive; if you write a multi-move focus, the Executor will bundle.
+
+  BAD: "Confirm scope and ask about read load."             (two moves bundled)
+  BAD: "Lock the contract, then push for HLD."              (two moves bundled — \`then\` is the smell)
+  BAD: "Acknowledge their NFRs and stress-test 99.99% under 500k QPS."  (two moves + two leaks)
+  BAD: "Walk me through HLD. Where does the read load hit hardest?"     (two questions stacked)
+
+  GOOD: "Confirm scope is locked."                          (one HAND_OFF move)
+  GOOD: "Open HLD with how the write path works."           (one ASK move)
+  GOOD: "Push on read-vs-write separation."                 (one GO_DEEPER move)
+
+  Smells of bundling in recommended_focus:
+    - the word "and" joining two verbs
+    - the word "then"
+    - a period followed by another sentence
+    - more than one question mark
+
+  If you find yourself bundling: pick the higher-priority move, write it as the focus, and queue the other in \`notes\` for a future turn.
+
+STEP 8 — COMPUTE MOMENTUM + SET DIFFICULTY
+
+STEP 9 — SELECT MOVE
   asked_question                              → ANSWER_AND_RELEASE (one fact, one dimension, never bundle, never append a transition phrase)
   procedural / meta-question                  → LET_LEAD (never CLOSE, never WRAP_TOPIC)
   driving + no breadth gaps + thread ok       → LET_LEAD
@@ -743,18 +807,18 @@ STEP 8 — SELECT MOVE
     (d) consecutive_probes_on_subtopic >= 3 AND no other unprobed angle exists in section
   WRAP_TOPIC fires when section is over budget regardless of EXIT GATE (with red flag for incomplete).
 
-STEP 9 — CLOSE GATE
+STEP 10 — CLOSE GATE
   CLOSE only valid if: wall_clock >= 45m AND all sections touched.
   If not → find another angle (deeper on highest-signal section, fault scenario, breadth question, INJECT_VARIANT).
   When forced to redirect: HAND_OFF to highest-priority untouched section. Priority order:
     deep_dive > operations > high_level_design > requirements
 
-STEP 10 — WRITE recommended_focus
-  Single question in the candidate's vocabulary.
-  No scale numbers unless asked. No unseeded components.
+STEP 11 — WRITE recommended_focus
+  Single statement (or single question) in the candidate's vocabulary.
+  Apply STEP 6 (earn-before-name) and STEP 7 (one-move-per-directive) before emitting — no unearned config vocabulary, no bundled clauses.
   Must NOT contain a section-transition phrase ("walk me through ...", "let's move on to ...", etc.) UNLESS move ∈ {HAND_OFF, WRAP_TOPIC}.
 
-STEP 11 — UPDATE VERDICT, TRAJECTORY, FLAGS
+STEP 12 — UPDATE VERDICT, TRAJECTORY, FLAGS
   Commit performance_assessment on every substantive turn.
   Update verdict_trajectory.
   Max 2 probes, 2 flags, 1 consumed_probe_id per turn.`;
@@ -773,8 +837,22 @@ Breadth:
 Thread depth:
   - Never 3+ consecutive probes on the same subtopic
 
-Scale facts:
-  - Never inject a scale number the candidate didn't ask for
+Earn-before-name (config vocabulary):
+  - The injected INTERVIEW CONFIG block is your reference data; the candidate has not seen it.
+  - These topics ARE the interview content — caching, IDs, scale, fault scenarios, etc. The rule is NOT to avoid them. The rule is: don't be the FIRST to name them.
+  - NEVER write a config-sourced word, number, label, or phrase into recommended_focus unless the candidate has surfaced it (named, asked, drawn) OR a STEP 6 carve-out applies.
+  - Once the candidate surfaces a topic, push HARD on it — that's the interview.
+  - Covers: scale_facts numbers; required_breadth_components items; deep_dive_topics labels; scope.in/out_of_scope phrases; signal_id labels; verbatim fault/raise/variant strings.
+
+One move per turn:
+  - recommended_focus = exactly one move's worth of guidance. Not two, not "X and Y", not "X then Y".
+  - If the candidate needs both X and Y, queue X for this turn and put Y in \`notes\` for next turn.
+  - The Executor renders one turn per directive — bundled focus → bundled reply → broken interview.
+
+recommended_focus is candidate-facing:
+  - Whatever you write in recommended_focus is read by the candidate verbatim through the Executor's voice.
+  - Never write your own reasoning, observations, or directive notes into recommended_focus.
+  - Use the \`notes\` field for your own commentary — \`notes\` is NEVER shown to the candidate.
 
 "I don't know":
   - Never follow with another probe on the same subtopic

@@ -252,6 +252,122 @@ test('buildPrompt INTERVIEW CONFIG block includes required_breadth_components an
   assert.match(prompt, /variant_scenarios/);
 });
 
+/* --------------------------- v5.1 hardened Planner rules ------------ */
+
+test('buildPrompt: STEP 6 — EARN BEFORE NAME (config-vocabulary) replaces SCALE FACT INJECTION CHECK', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  const prompt = buildPrompt({
+    config,
+    interview,
+    sessionState: {},
+    candidateMessage: '',
+    interviewerReply: '',
+  });
+  // Renamed header.
+  assert.match(prompt, /STEP 6 — EARN BEFORE NAME/);
+  // Old narrow heading must be gone.
+  assert.doesNotMatch(prompt, /STEP 6 — CHECK SCALE FACT INJECTION/);
+  // Engage-freely framing — proves the rule is positively framed.
+  assert.match(prompt, /Once a topic is earned, push hard|the whole point of the interview/);
+});
+
+test('buildPrompt: STEP 6 covers all config categories with non-scale BAD examples', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  const prompt = buildPrompt({
+    config,
+    interview,
+    sessionState: {},
+    candidateMessage: '',
+    interviewerReply: '',
+  });
+  // Backwards-compat: scale BAD still present.
+  assert.match(prompt, /How do you handle 500k redirects\/sec\?/);
+  // Non-scale BAD examples — proves the generalization landed.
+  assert.match(prompt, /How does your caching layer handle TTL\?/);
+  assert.match(prompt, /Walk me through your read_write_separation/);
+  assert.match(prompt, /Let's talk about your consistent hashing approach/);
+  assert.match(prompt, /How do first-write-wins collisions work/);
+});
+
+test('buildPrompt: STEP 6 includes once-earned GOOD examples (engage-freely half)', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  const prompt = buildPrompt({
+    config,
+    interview,
+    sessionState: {},
+    candidateMessage: '',
+    interviewerReply: '',
+  });
+  // Once-earned: candidate raised something → fair-game push is shown concretely.
+  assert.match(prompt, /Once-earned/);
+  assert.match(prompt, /Redis cache/);
+  assert.match(prompt, /partition by hash/);
+});
+
+test('buildPrompt: STEP 7 — ONE MOVE PER DIRECTIVE with bundled-focus BAD examples', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  const prompt = buildPrompt({
+    config,
+    interview,
+    sessionState: {},
+    candidateMessage: '',
+    interviewerReply: '',
+  });
+  assert.match(prompt, /STEP 7 — ONE MOVE PER DIRECTIVE/);
+  // Bundled-focus BAD example — `and` joining two verbs.
+  assert.match(prompt, /Confirm scope and ask about read load/);
+  // Smell-test enumeration.
+  assert.match(prompt, /Smells of bundling in recommended_focus/);
+  // Escape hatch — queue the other move in `notes`.
+  assert.match(prompt, /queue the other in `notes` for a future turn/);
+});
+
+test('buildPrompt: HARD_RULES_SUMMARY carries Earn-before-name + One move per turn + candidate-facing sub-blocks', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  const prompt = buildPrompt({
+    config,
+    interview,
+    sessionState: {},
+    candidateMessage: '',
+    interviewerReply: '',
+  });
+  // New sub-block headings.
+  assert.match(prompt, /Earn-before-name \(config vocabulary\):/);
+  assert.match(prompt, /One move per turn:/);
+  assert.match(prompt, /recommended_focus is candidate-facing:/);
+  // Engage-freely framing in the summary too.
+  assert.match(prompt, /push HARD on it — that's the interview/);
+  // The old narrow heading is gone.
+  assert.doesNotMatch(prompt, /^Scale facts:$/m);
+  // `notes` is Planner-only field reminder.
+  assert.match(prompt, /`notes` is NEVER shown to the candidate/);
+});
+
+test('buildPrompt: subsequent STEP numbers shifted to make room for new STEP 7', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  const prompt = buildPrompt({
+    config,
+    interview,
+    sessionState: {},
+    candidateMessage: '',
+    interviewerReply: '',
+  });
+  // STEP 8 is now COMPUTE MOMENTUM (was STEP 7), STEP 9 SELECT MOVE, etc.
+  assert.match(prompt, /STEP 8 — COMPUTE MOMENTUM/);
+  assert.match(prompt, /STEP 9 — SELECT MOVE/);
+  assert.match(prompt, /STEP 10 — CLOSE GATE/);
+  assert.match(prompt, /STEP 11 — WRITE recommended_focus/);
+  assert.match(prompt, /STEP 12 — UPDATE VERDICT/);
+  // STEP 11 cross-references the new STEP 6 + STEP 7 rules.
+  assert.match(prompt, /Apply STEP 6 \(earn-before-name\) and STEP 7 \(one-move-per-directive\)/);
+});
+
 test('buildPrompt requirements contract block reflects substrate state', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview();

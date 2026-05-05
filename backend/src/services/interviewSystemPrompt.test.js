@@ -65,6 +65,69 @@ test('Hard Output Rules block carries v5 prohibitions (emote, passive surrender,
   assert.match(prompt, /NO scale numbers unless asked/);
 });
 
+/* --------------------------- v5.1 hardened rules --------------------- */
+
+test('Hard Output Rules: CORE RULE 1 — ONE TURN = ONE MOVE with bundling BAD example', () => {
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {},
+  });
+  assert.match(prompt, /CORE RULE 1 — ONE TURN = ONE MOVE/);
+  // Concrete bundling BAD example matching the transcript failure.
+  assert.match(prompt, /Now walk me through your high-level architecture/);
+  // The "if it doesn't fit in three sentences, you ARE bundling" tie-in.
+  assert.match(prompt, /you ARE bundling — cut a move/);
+});
+
+test('Hard Output Rules: CORE RULE 2 — EARN BEFORE YOU NAME with engage-freely framing', () => {
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {},
+  });
+  assert.match(prompt, /CORE RULE 2 — EARN BEFORE YOU NAME/);
+  // Engage-freely framing — the rule is positively framed, not pure prohibition.
+  assert.match(prompt, /engage HARD/);
+  assert.match(prompt, /Once the candidate surfaces|Once the candidate has surfaced/);
+  // Concrete once-earned GOOD example (Redis cache or partition by hash).
+  assert.match(prompt, /Redis cache|partition the URL table by hash|partition by hash/);
+  // Coverage broader than scale — both required breadth components and deep-dive topics.
+  assert.match(prompt, /Required Breadth Components/);
+  assert.match(prompt, /Deep-Dive Topics/);
+  // Three carve-outs explicitly enumerated.
+  assert.match(prompt, /INJECT_FAULT \/ RAISE_STAKES \/ INJECT_VARIANT/);
+  assert.match(prompt, /Requirements Contract Closing/);
+});
+
+test('Hard Output Rules: parenthetical-aside ban with concrete patterns', () => {
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {},
+  });
+  assert.match(prompt, /NO parenthetical asides/);
+  assert.match(prompt, /\*\(Note:/);
+  assert.match(prompt, /\(Note:/);
+  assert.match(prompt, /\*\(Observing:/);
+  assert.match(prompt, /the Planner does not read your reply/);
+});
+
+test('Hard Output Rules: explicit markdown forbidden-list (bullets, bold, headers)', () => {
+  const config = loadInterviewConfig();
+  const prompt = buildSystemPrompt({
+    config,
+    interview: { interview_type: 'system_design', interview_mode: 'chat' },
+    sessionState: {},
+  });
+  assert.match(prompt, /NO bullets/);
+  assert.match(prompt, /\*\*bold\*\*/);
+  assert.match(prompt, /## headers/);
+});
+
 test('Conversational examples block is present', () => {
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
@@ -87,18 +150,25 @@ test('Nudging vs. Challenging block is present', () => {
   assert.match(prompt, /# Nudging vs\. Challenging/);
 });
 
-test('Four Anti-Patterns block is present (Seeding, Bundling, Math correction, Echoing)', () => {
+test('Five Anti-Patterns block is present (Seeding, Bundling, Math correction, Echoing, Meta-leaking)', () => {
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
     config,
     interview: { interview_type: 'system_design', interview_mode: 'chat' },
     sessionState: {},
   });
-  assert.match(prompt, /# Four Anti-Patterns/);
+  assert.match(prompt, /# Five Anti-Patterns/);
   assert.match(prompt, /Seeding/);
   assert.match(prompt, /Bundling/);
   assert.match(prompt, /Math correction/);
   assert.match(prompt, /Echoing/);
+  // 5th anti-pattern (Meta-leaking) added in v5.1 hardening.
+  assert.match(prompt, /5\. Meta-leaking/);
+  assert.match(prompt, /\(Note: \.\.\.\)/);
+  assert.match(prompt, /Directive was to/);
+  // Anti-pattern #2 Bundling now carries the worked transcript-style BAD example.
+  assert.match(prompt, /period followed by a fresh question/);
+  assert.match(prompt, /Now walk me through high-level architecture/);
 });
 
 test('Requirements Contract Closing block is present (the only proactive summary)', () => {
@@ -175,6 +245,14 @@ test('MOVE_GUIDANCE includes v5 NEW moves NUDGE_BREADTH and INJECT_VARIANT', () 
 
   assert.ok(MOVE_GUIDANCE.INJECT_VARIANT, 'INJECT_VARIANT guidance must exist');
   assert.match(MOVE_GUIDANCE.INJECT_VARIANT, /variant/i);
+});
+
+test('MOVE_GUIDANCE.ANSWER_AND_RELEASE carries the bundled answer+question BAD example (v5.1)', () => {
+  assert.ok(MOVE_GUIDANCE.ANSWER_AND_RELEASE);
+  // Worked BAD pattern matching the transcript: answer followed by new question.
+  assert.match(MOVE_GUIDANCE.ANSWER_AND_RELEASE, /Now walk me through your high-level architecture/);
+  // The next-question-comes-NEXT-turn reminder.
+  assert.match(MOVE_GUIDANCE.ANSWER_AND_RELEASE, /Planner on the NEXT turn/);
 });
 
 test('MOVE_GUIDANCE covers all 17 v5 moves', () => {
@@ -364,7 +442,7 @@ test('Canvas snapshot with content marks the diagram as the source of truth', ()
 
 /* --------------------------- Section ordering / safety ------------- */
 
-test('Sections appear in the correct order (persona before directive before reference data)', () => {
+test('Sections appear in the correct v5.1 order (Hard Output Rules + Anti-Patterns read EARLY, before Opening + Directive)', () => {
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
     config,
@@ -373,24 +451,29 @@ test('Sections appear in the correct order (persona before directive before refe
   });
   const idxRole = prompt.indexOf('# What You Are');
   const idxHumanFeel = prompt.indexOf('# The Human Feel');
+  const idxHardRules = prompt.indexOf('# Hard Output Rules');
+  const idxAnti = prompt.indexOf('# Five Anti-Patterns');
   const idxOpening = prompt.indexOf('# Opening Protocol');
   const idxDirective = prompt.indexOf('# Directive');
   const idxContractClose = prompt.indexOf('# Requirements Contract Closing');
-  const idxAnti = prompt.indexOf('# Four Anti-Patterns');
   const idxSectionPlan = prompt.indexOf('# Section Plan');
   const idxCanvas = prompt.indexOf("Candidate's current diagram");
 
   assert.ok(idxRole >= 0);
   assert.ok(idxRole < idxHumanFeel);
-  assert.ok(idxHumanFeel < idxOpening);
+  // v5.1: Hard Output Rules + Anti-Patterns now appear right after Human Feel,
+  // BEFORE Opening Protocol / Directive / Move guidance — so the model has
+  // read the bundling and earn-before-name rules before any move-rendering.
+  assert.ok(idxHumanFeel < idxHardRules, 'Hard Output Rules must follow Human Feel');
+  assert.ok(idxHardRules < idxAnti, 'Anti-Patterns must follow Hard Output Rules');
+  assert.ok(idxAnti < idxOpening, 'Anti-Patterns must precede Opening Protocol');
   assert.ok(idxOpening < idxDirective);
   assert.ok(idxDirective < idxContractClose);
-  assert.ok(idxContractClose < idxAnti);
-  assert.ok(idxAnti < idxSectionPlan);
+  assert.ok(idxContractClose < idxSectionPlan);
   assert.ok(idxSectionPlan < idxCanvas);
 });
 
-test('Prompt under 18,000 characters with a complete v5 directive (token budget sanity)', () => {
+test('Prompt under 19,000 characters with a complete v5 directive (token budget sanity)', () => {
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
     config,
@@ -407,8 +490,11 @@ test('Prompt under 18,000 characters with a complete v5 directive (token budget 
       },
     },
   });
+  // v5.1: budget bumped from 18000 → 19000 to accommodate the two new core
+  // rules (ONE TURN = ONE MOVE, EARN BEFORE NAME) with concrete BAD/GOOD
+  // examples that materially improve interviewer behavior.
   assert.ok(
-    prompt.length < 18000,
-    `prompt length ${prompt.length} exceeds 18000 — investigate what got added`
+    prompt.length < 19000,
+    `prompt length ${prompt.length} exceeds 19000 — investigate what got added`
   );
 });

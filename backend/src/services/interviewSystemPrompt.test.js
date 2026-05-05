@@ -350,27 +350,29 @@ test('Directive block emits answer_only instruction when answer_only=true', () =
 
 /* --------------------------- Opening Protocol ----------------------- */
 
-test('Opening Protocol Case A (procedural ack → render reference text verbatim)', () => {
+test('Opening Protocol (T1 only): renders the reference text verbatim regardless of candidate input', () => {
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
     config,
     interview: { interview_type: 'system_design', interview_mode: 'chat' },
     sessionState: {},
   });
-  assert.match(prompt, /Case A — they acked/);
+  assert.match(prompt, /Opening Protocol \(active on T1 only\)/);
   assert.match(prompt, /Reply with the reference text above VERBATIM\. Word-for-word\./);
 });
 
-test('Opening Protocol Case B (substantive opening → engage directly, no recite)', () => {
+test('Opening Protocol (T1 only): explicitly forbids the "Got it. Continue." rubber-stamp on a substantive first turn (Planner-first covers redirects from T2)', () => {
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
     config,
     interview: { interview_type: 'system_design', interview_mode: 'chat' },
     sessionState: {},
   });
-  assert.match(prompt, /Case B — they have already begun framing the problem/);
-  assert.match(prompt, /DO NOT recite the reference text back/);
-  assert.match(prompt, /ANSWER_AND_RELEASE on ONE scope question/);
+  // The candidate jumping to HLD on their very first message no longer earns
+  // a rubber-stamp ack — Planner-first will issue a redirect on T2.
+  assert.match(prompt, /Got it\. Continue/);
+  assert.match(prompt, /do NOT say|Do NOT say/);
+  assert.match(prompt, /Planner will see their substantive content on the next turn/);
 });
 
 test('Opening Protocol embeds config.problem.opening_prompt verbatim as DATA', () => {

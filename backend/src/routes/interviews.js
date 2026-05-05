@@ -9,6 +9,8 @@ import {
   appendCandidateTurn,
   appendInterviewerTurn,
   runBackgroundEvalCapture,
+  runForegroundEvalCapture,
+  recordDebugTraceEntry,
   streamInterviewerReply,
   YEARS_EXPERIENCE_BANDS,
 } from '../services/interviewSessionService.js';
@@ -112,6 +114,18 @@ function writeSseEvent(res, event, data) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
+
+/**
+ * Per-interview in-flight Planner eval promise. v5 Planner-first flow uses
+ * background eval ONLY for T1 (the very first candidate turn after the intro
+ * line) — T1's Executor reply is the deterministic problem-statement handoff,
+ * so we don't need Planner before it; we let the eval classify T1 in the
+ * background to keep TTI snappy. T2+ runs Planner inline before the Executor.
+ *
+ * The next turn awaits any in-flight prior eval here before re-fetching the
+ * doc, so it never reads a stale next_directive.
+ */
+const pendingEvalByInterview = new Map();
 
 /* ---------------- Routes ---------------- */
 
@@ -246,11 +260,25 @@ router.post('/:clientId/session/start', async (req, res) => {
  *   event: meta  data: { turn_index }            once
  *   event: token data: { delta }                 N times as tokens arrive
  *   event: done  data: { interviewer_message }   once when stream completes
- *   event: state data: { session_state, interview_done } once after eval lands
  *   event: error data: { message }               on failure
+ *
+ * v5 Planner-first flow:
+ *   T1 (first candidate turn): Executor streams the deterministic
+ *     problem-statement handoff via the Opening Protocol. Planner runs as
+ *     fire-and-forget AFTER res.end() (signal-only — its directive will be
+ *     overwritten by T2's foreground Planner run anyway).
+ *   T2+ : Planner runs SYNCHRONOUSLY before the Executor stream so the
+ *     Executor's system prompt reads a fresh `next_directive` produced from
+ *     this turn's candidate message. This is what stops things like
+ *     "candidate jumps to HLD before requirements" from getting rubber-
+ *     stamped on the same turn they happen.
+ *
+ * Frontends that need to know whether the interview is_done after a turn
+ * poll /session/state a few seconds after the `done` event.
  */
 router.post('/:clientId/session/turn', async (req, res) => {
   let opened = false;
+  const clientId = req.params.clientId;
   try {
     const userObjectId = toUserObjectId(req.userId);
     if (!userObjectId) return res.status(401).json({ error: 'Unauthorized' });
@@ -259,9 +287,23 @@ router.post('/:clientId/session/turn', async (req, res) => {
       return res.status(400).json({ error: 'candidate_message required' });
     }
 
+    // Serialize against any still-in-flight Planner eval for THIS interview.
+    // Without this, a fast typer's turn N+1 could re-fetch the doc before
+    // turn N's eval has saved its session_state mutations, so the Executor
+    // would render against a stale next_directive (and worse, the late
+    // eval save could clobber turn N+1's appended candidate turn).
+    const prior = pendingEvalByInterview.get(clientId);
+    if (prior) {
+      try {
+        await prior;
+      } catch {
+        /* already logged inside the eval wrapper */
+      }
+    }
+
     const doc = await Interview.findOne({
       userId: userObjectId,
-      clientId: req.params.clientId,
+      clientId,
     }).exec();
     if (!doc) return res.status(404).json({ error: 'Not found' });
     if (!doc.interview_config || !doc.template_id) {
@@ -274,7 +316,50 @@ router.post('/:clientId/session/turn', async (req, res) => {
     const config = loadInterviewConfig();
     const trimmedMessage = candidate_message.trim();
 
+    // The most recent interviewer turn BEFORE this candidate turn — used as
+    // the Planner's "LATEST INTERVIEWER TURN" context on T2+ (where the
+    // Planner runs before the new Executor reply). Computed before
+    // appendCandidateTurn so it's unambiguously the prior interviewer turn.
+    const priorInterviewerReply = (() => {
+      const turns = Array.isArray(doc.conversation_turns) ? doc.conversation_turns : [];
+      for (let i = turns.length - 1; i >= 0; i -= 1) {
+        if (turns[i]?.role === 'interviewer') return String(turns[i].content || '');
+      }
+      return '';
+    })();
+
     const candidateTurnIndex = appendCandidateTurn(doc, trimmedMessage);
+    const isT1 = candidateTurnIndex === 1;
+
+    // T2+ : Planner-first. Run the Planner LLM synchronously so the Executor's
+    // system prompt picks up the freshly-mutated next_directive in-memory.
+    // captured.__trace is preserved on the result for the post-stream debug
+    // entry assembly below.
+    let foregroundCaptured = null;
+    if (!isT1) {
+      try {
+        const result = await runForegroundEvalCapture(doc, {
+          config,
+          candidateMessage: trimmedMessage,
+          interviewerReply: priorInterviewerReply,
+          candidateTurnIndex,
+        });
+        foregroundCaptured = result.captured;
+      } catch (err) {
+        // If the Planner fails, continue with whatever next_directive was
+        // already on the doc. The Executor still has the Opening Protocol
+        // / prior directive to fall back on. The miss gets logged.
+        console.warn('[session/turn] foreground planner eval failed:', err);
+      }
+
+      // Hard turn-cap could have flipped interview_done synchronously inside
+      // the foreground eval (HARD_TURN_CAP=60). If so, bail with a 409 before
+      // streaming — there's no Executor reply to give.
+      if (doc.session_state?.interview_done) {
+        await doc.save();
+        return res.status(409).json({ error: 'Interview already complete' });
+      }
+    }
 
     openSseStream(res);
     opened = true;
@@ -323,9 +408,6 @@ router.post('/:clientId/session/turn', async (req, res) => {
 
     const finalReply = assembled.trim();
     appendInterviewerTurn(doc, finalReply);
-    await doc.save();
-
-    writeSseEvent(res, 'done', { interviewer_message: finalReply });
 
     if (executorTrace) {
       executorTrace.reply = finalReply;
@@ -334,29 +416,48 @@ router.post('/:clientId/session/turn', async (req, res) => {
         : null;
     }
 
-    // Background eval capture — don't block the user's bubble on this.
-    try {
-      const { interviewDone } = await runBackgroundEvalCapture(doc, {
-        config,
-        candidateMessage: trimmedMessage,
-        interviewerReply: finalReply,
+    // T2+ : the Planner already ran inline; fold its trace + the executor
+    // trace into a single debug_trace entry now that both are available.
+    if (!isT1 && foregroundCaptured) {
+      recordDebugTraceEntry(doc, {
         candidateTurnIndex,
+        candidateMessage: trimmedMessage,
+        captured: foregroundCaptured,
         executorTrace,
-      });
-      writeSseEvent(res, 'state', {
-        session_state: doc.session_state,
-        interview_done: !!interviewDone,
-      });
-    } catch (err) {
-      console.warn('[session/turn] eval capture failed:', err);
-      // The user already has the reply; emit a non-fatal state event.
-      writeSseEvent(res, 'state', {
-        session_state: doc.session_state,
-        interview_done: !!doc.session_state?.interview_done,
       });
     }
 
+    await doc.save();
+
+    writeSseEvent(res, 'done', { interviewer_message: finalReply });
+
+    // End the SSE stream NOW so the user's UI unblocks immediately.
     res.end();
+
+    // T1 only — fire-and-forget Planner eval. T1's Executor reply is the
+    // deterministic problem-statement handoff (Opening Protocol), so we
+    // don't need Planner BEFORE the stream. Its directive is signal-only
+    // because T2 will overwrite next_directive via its foreground run.
+    if (isT1) {
+      const evalPromise = (async () => {
+        try {
+          await runBackgroundEvalCapture(doc, {
+            config,
+            candidateMessage: trimmedMessage,
+            interviewerReply: finalReply,
+            candidateTurnIndex,
+            executorTrace,
+          });
+        } catch (err) {
+          console.warn('[session/turn] eval capture failed:', err);
+        } finally {
+          if (pendingEvalByInterview.get(clientId) === evalPromise) {
+            pendingEvalByInterview.delete(clientId);
+          }
+        }
+      })();
+      pendingEvalByInterview.set(clientId, evalPromise);
+    }
   } catch (e) {
     console.error(e);
     if (opened) {

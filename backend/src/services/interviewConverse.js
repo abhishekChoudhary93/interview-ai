@@ -66,12 +66,19 @@ export async function* streamInterviewerReply({
     traceCapture.started_at = Date.now();
   }
 
+  const onUsage = traceCapture
+    ? (usage) => {
+        traceCapture.usage = usage;
+      }
+    : undefined;
+
   yield* streamLLM({
     messages,
     modelTier: 'conversational',
     temperature: 0.75,
     max_tokens: 400,
     signal,
+    onUsage,
   });
 }
 

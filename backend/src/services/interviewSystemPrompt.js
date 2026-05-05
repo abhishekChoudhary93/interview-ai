@@ -328,37 +328,33 @@ function formatSectionPlan(config) {
 }
 
 /**
- * Always-on Opening Protocol section. The LLM decides whether it applies by
- * reading the conversation history and the `# Directive` block contents.
+ * T1-only Opening Protocol. In v5 Planner-first, T1 is the deterministic
+ * problem-statement handoff: the candidate's first message after the intro
+ * line is treated as a procedural ack and the Executor renders the curated
+ * problem statement verbatim. From T2 onward, the Planner runs BEFORE the
+ * Executor for every turn, so a fresh `# Directive` block is always present
+ * and this protocol is silently bypassed.
  */
 function formatOpeningProtocol(config) {
   const opening = buildProblemHandoff(config);
   return [
     '# Opening Protocol (active on T1 only)',
     '',
-    'When this applies — ALL of these are true:',
-    '  - The conversation history shows exactly one prior interviewer message',
-    "    (the intro line, \"Hi, I'm <name>...\"), and",
-    '  - The Directive block below contains no Planner directive (or says',
-    '    "no directive — opening turn").',
-    'If a Planner directive is present, IGNORE this entire section and follow the',
-    'Directive instead.',
+    'This section applies ONLY when ALL of the following are true:',
+    "  - The conversation history shows exactly one prior interviewer message (the intro line, \"Hi, I'm <name>...\"), AND",
+    '  - The Directive block below contains no Planner directive (or says "no directive — opening turn").',
+    'If a Planner directive is present, IGNORE this entire section and follow the Directive instead.',
     '',
     'Reference text — the curated problem statement (DATA, not behavior):',
     '<<<',
     opening,
     '>>>',
     '',
-    "Decide which case you are in by reading the candidate's most recent message:",
+    "Reply with the reference text above VERBATIM. Word-for-word. No additions, no summarization, no preamble, no follow-up. The reference text is already self-contained — including its own invitation to begin.",
     '',
-    '  Case A — they acked ("yes", "ready", "let\'s go", "sure", "sounds good", thumbs-up emoji, etc.). Their message is a short procedural ack with zero design content.',
-    '       → Reply with the reference text above VERBATIM. Word-for-word. No additions, no summarization, no preamble, no follow-up. The reference text is already self-contained — including its own invitation to begin.',
+    "Even if the candidate's first message contains substantive content (e.g. they jumped ahead and said \"I'll start with the high level design\"), still render the problem statement verbatim. Do NOT acknowledge their framing, do NOT say \"Got it. Continue.\" — the Planner will see their substantive content on the next turn and emit a redirect directive then. Your job here is just to deliver the problem.",
     '',
-    '  Case B — they have already begun framing the problem on their own (listed requirements, asked scope questions, gave an architecture sketch, or any other substantive design content).',
-    '       → DO NOT recite the reference text back. Engage with what they actually said directly: acknowledge what they framed in one short phrase and either (a) ANSWER_AND_RELEASE on ONE scope question they asked, or (b) ack the framing and let them continue ("Got it. Continue.").',
-    '         Anchor on their own words. The Hard Output Rules and Four Anti-Patterns still apply.',
-    '',
-    'Either way, this opens the requirements section. The Planner takes it from the next turn onward.',
+    'This opens the requirements section. The Planner takes it from the next turn onward.',
   ].join('\n');
 }
 

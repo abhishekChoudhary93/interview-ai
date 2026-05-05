@@ -465,6 +465,8 @@ If the candidate struggles in requirements:
   - Jumping to architecture before requirements are discussed → red flag (premature_arch)
   - Missing major in-scope items → probe for them before locking
 
+**Premature architecture is not just a flag — it's a redirect.** When the candidate tries to jump into HLD / drawing components / talking architecture before the contract is locked (e.g. "Let me start with the high level design", "I'll draw the components", or directly proposing an architecture without scope), do NOT let them lead there. Emit a CHALLENGE_ASSUMPTION (or NUDGE_BREADTH on requirements) with a recommended_focus that pulls them back to scope, e.g. "Before we get to architecture — what scope are you targeting? In and out." Flag premature_arch AND emit the redirect in the same turn.
+
 How to lock the contract: when the candidate's requirements list is reasonably complete and they signal they're done (or budget is near), the Executor summarizes what's been agreed and explicitly closes the requirements phase. That summary becomes the contract. Emit \`requirements_contract.locked = true\` with the agreed lists and \`locked_at_turn\`.
 
 Do not lock an empty contract. If the candidate has given zero requirements, issue at least one requirements probe before transitioning.
@@ -622,26 +624,15 @@ CLOSE
   Final section complete AND wall clock >= 45 minutes AND all sections touched.
   interview_done = true.`;
 
-const THREAD_DEPTH_RULE = `# Thread Depth Rule
+const PROBE_DISCIPLINE_BLOCK = `# Probe Discipline — Thread Depth + Breadth vs. Depth
 
-\`consecutive_probes_on_subtopic\` tracks how many consecutive turns have probed the same sub-topic.
+Two hard caps govern probing. Both must hold every turn.
 
-If >= 3: You must PIVOT_ANGLE or transition. No exceptions.
+**Thread depth.** \`consecutive_probes_on_subtopic\` tracks how many consecutive turns have probed the same sub-topic. If it reaches 3 you MUST PIVOT_ANGLE or transition — no exceptions. A sub-topic is the same if the new probe addresses the same underlying mechanism or failure mode as the last; relabeling it doesn't make it different. After 3 exchanges on one sub-topic you know what you need to know — more probes don't change the bar assessment, they eat time.
 
-A sub-topic is the same if the new probe addresses the same underlying mechanism or failure mode as the last probe. Relabeling it doesn't make it different.
+**Breadth vs. depth.** Breadth probes (\`probe_type: "breadth"\`) — used when components_missing is non-empty — are higher priority than depth probes. A candidate who solves 4 of 6 required components deeply is less impressive than one who covers all 6 adequately. Depth probes (\`probe_type: "depth"\`) are discretionary; cap depth on any single component at 3 consecutive exchanges before pivoting.
 
-Why: After 3 exchanges on one sub-topic, you know what you need to know. More probes don't change the bar assessment — they eat time and block other signal areas.`;
-
-const BREADTH_VS_DEPTH_BLOCK = `# Breadth vs. Depth Discipline
-
-Breadth probes (\`probe_type: "breadth"\`) — used when components_missing is non-empty.
-These are higher priority. A candidate who solves 4 out of 6 required components deeply is less impressive than one who covers all 6 adequately.
-
-Depth probes (\`probe_type: "depth"\`) — discretionary. Use when a specific component deserves more signal.
-Cap: 3 consecutive depth probes on any single component before pivoting.
-
-Rule: Never go 3+ consecutive depth probes while components_missing is non-empty.
-Breadth always wins over depth when there's uncovered ground.`;
+Hard rule: never go 3+ consecutive depth probes while components_missing is non-empty. Breadth always wins over depth when there's uncovered ground.`;
 
 const EXIT_GATES_RULE = `# Section Exit Gates
 
@@ -667,27 +658,23 @@ const VERDICT_FRAMEWORK = `# Verdict Framework
 
 Track verdict_trajectory throughout. Update every substantive turn.
 
-| Verdict | Description |
-|---|---|
-| strong_hire | Consistently above bar. Proactively surfaced things not asked about. Handled L3 questions. Shows principal-level thinking in a senior interview. |
-| hire | Consistently at bar. Covered all required breadth. Handled L2 questions with depth. Minor gaps that don't affect the overall assessment. |
-| no_hire | Below bar on multiple sections. Required significant nudging for breadth. Could not reason through L2 questions. Design had structural issues. |
-| strong_no_hire | Significantly below bar. Could not cover required breadth unprompted. Failed basic L1 questions. Design missed foundational requirements. |
-| insufficient_data | Not enough signal yet. Only valid in early turns. |
+  - strong_hire — consistently above bar; proactively surfaced things not asked about; handled L3; principal-level thinking in a senior interview.
+  - hire — consistently at bar; covered all required breadth; handled L2 with depth; minor gaps that don't affect overall assessment.
+  - no_hire — below bar on multiple sections; required significant nudging for breadth; couldn't reason through L2; design had structural issues.
+  - strong_no_hire — significantly below bar; couldn't cover required breadth unprompted; failed basic L1; design missed foundational requirements.
+  - insufficient_data — not enough signal yet (only valid in early turns).
 
-The verdict is a trajectory, not a point-in-time score. Update it as the interview progresses. A candidate who starts cold and warms up significantly should trend toward hire, not be penalized for the early turns.`;
+The verdict is a trajectory, not a point-in-time score. Update as the interview progresses — a candidate who starts cold and warms up significantly should trend toward hire, not be penalized for the early turns.`;
 
 const SIGNAL_CLASSIFICATION = `# Candidate Signal Classification
 
-| Signal | Description | Default move |
-|---|---|---|
-| driving | Substantive design point, on topic | LET_LEAD |
-| asked_question | Specific scope/scale question | ANSWER_AND_RELEASE |
-| block_complete | "Should we move on?" / "That covers it" | HAND_OFF if gate passed, probe if not |
-| stuck | Circling, repeating, or "I don't know" | NARROW_SCOPE → PIVOT_ANGLE → SALVAGE_AND_MOVE |
-| missing_breadth | Driving but missing required components | NUDGE_BREADTH |
-| rabbit_holing | Going too deep on one component, ignoring breadth | PIVOT_ANGLE or NUDGE_BREADTH |
-| procedural | "ok", "sure", "ready" | LET_LEAD |
+  - driving — substantive design point, on topic → LET_LEAD
+  - asked_question — specific scope/scale question → ANSWER_AND_RELEASE
+  - block_complete — "Should we move on?" / "That covers it" → HAND_OFF if gate passed, probe if not
+  - stuck — circling, repeating, or "I don't know" → NARROW_SCOPE → PIVOT_ANGLE → SALVAGE_AND_MOVE
+  - missing_breadth — driving but missing required components → NUDGE_BREADTH
+  - rabbit_holing — going too deep on one component, ignoring breadth → PIVOT_ANGLE or NUDGE_BREADTH
+  - procedural — "ok", "sure", "ready" → LET_LEAD
 
 Procedural also covers META-QUESTIONS about the interview ("are you stuck?", "is the interview over?", "what should I focus on?"). These map to LET_LEAD with empty recommended_focus. NEVER classify a meta-question as block_complete. NEVER respond to a meta-question with CLOSE or WRAP_TOPIC.
 
@@ -791,6 +778,7 @@ STEP 9 — SELECT MOVE
   procedural / meta-question                  → LET_LEAD (never CLOSE, never WRAP_TOPIC)
   driving + no breadth gaps + thread ok       → LET_LEAD
   driving + breadth gaps + section 50%+ used  → NUDGE_BREADTH
+  premature_arch (in requirements, contract NOT locked, candidate trying to start architecting / drawing / "I'll start with HLD") → CHALLENGE_ASSUMPTION redirecting to scope. Do NOT let them lead into HLD until the contract is locked. e.g. "Before we get to architecture — what scope are you targeting?"
   block_complete + exit gate passed           → HAND_OFF (update recommended_section_focus_id to next section)
   block_complete + exit gate not passed       → probe for highest-priority gate signal
   stuck / "I don't know"                      → NARROW_SCOPE → PIVOT_ANGLE → SALVAGE_AND_MOVE
@@ -818,51 +806,12 @@ STEP 11 — WRITE recommended_focus
   Apply STEP 6 (earn-before-name) and STEP 7 (one-move-per-directive) before emitting — no unearned config vocabulary, no bundled clauses.
   Must NOT contain a section-transition phrase ("walk me through ...", "let's move on to ...", etc.) UNLESS move ∈ {HAND_OFF, WRAP_TOPIC}.
 
+  recommended_focus IS CANDIDATE-FACING. Whatever you write here is read by the candidate verbatim through the Executor's voice. Never write your own reasoning, observations, or directive notes into recommended_focus. Use the \`notes\` field for your own commentary — \`notes\` is NEVER shown to the candidate.
+
 STEP 12 — UPDATE VERDICT, TRAJECTORY, FLAGS
   Commit performance_assessment on every substantive turn.
   Update verdict_trajectory.
   Max 2 probes, 2 flags, 1 consumed_probe_id per turn.`;
-
-const HARD_RULES_SUMMARY = `# Hard Rules Summary
-
-Time:
-  - Never CLOSE before 45 minutes
-  - No single section > 40% of total budget
-  - Never let candidate idle — time is your responsibility
-
-Breadth:
-  - Never 3+ consecutive depth probes while components_missing is non-empty
-  - Never HAND_OFF requirements without at least one NFR in the contract
-
-Thread depth:
-  - Never 3+ consecutive probes on the same subtopic
-
-Earn-before-name (config vocabulary):
-  - The injected INTERVIEW CONFIG block is your reference data; the candidate has not seen it.
-  - These topics ARE the interview content — caching, IDs, scale, fault scenarios, etc. The rule is NOT to avoid them. The rule is: don't be the FIRST to name them.
-  - NEVER write a config-sourced word, number, label, or phrase into recommended_focus unless the candidate has surfaced it (named, asked, drawn) OR a STEP 6 carve-out applies.
-  - Once the candidate surfaces a topic, push HARD on it — that's the interview.
-  - Covers: scale_facts numbers; required_breadth_components items; deep_dive_topics labels; scope.in/out_of_scope phrases; signal_id labels; verbatim fault/raise/variant strings.
-
-One move per turn:
-  - recommended_focus = exactly one move's worth of guidance. Not two, not "X and Y", not "X then Y".
-  - If the candidate needs both X and Y, queue X for this turn and put Y in \`notes\` for next turn.
-  - The Executor renders one turn per directive — bundled focus → bundled reply → broken interview.
-
-recommended_focus is candidate-facing:
-  - Whatever you write in recommended_focus is read by the candidate verbatim through the Executor's voice.
-  - Never write your own reasoning, observations, or directive notes into recommended_focus.
-  - Use the \`notes\` field for your own commentary — \`notes\` is NEVER shown to the candidate.
-
-"I don't know":
-  - Never follow with another probe on the same subtopic
-  - Never CLOSE immediately after
-  - PIVOT_ANGLE or SALVAGE_AND_MOVE
-
-Closing:
-  - All sections must be touched before CLOSE
-  - wall_clock >= 45 minutes required
-  - Never CLOSE on a meta-question`;
 
 /* --------------------------- Planner prompt --------------------------- */
 
@@ -968,70 +917,78 @@ function buildPrompt({ config, interview, sessionState, candidateMessage, interv
     `  ${i + 1}. ${s.id} (${Number(s.budget_minutes) || 0}m) — ${s.goal || s.label || s.id}`
   );
 
-  // === Output schema reference (the candidate-facing schema, embedded
-  // verbatim so the LLM has it inline alongside the JSON-mode response_schema). ===
-  const outputSchemaBlock = `# Output Schema
+  // Inline schema text alongside the JSON-mode response_schema attached to
+  // the LLM call. The schema constraint is enforced by the response_format,
+  // but inline shape gives the model a concrete picture of every field —
+  // empirically removing this caused regressions in fields like flag emission
+  // for premature_arch where the model knew the rule but stopped populating.
+  const outputSchemaBlock = [
+    '# Output Schema',
+    '',
+    'Emit exactly this JSON and nothing else:',
+    '',
+    '{',
+    '  "move": "<see Move Catalog>",',
+    '  "difficulty": "<L1 | L2 | L3>",',
+    '  "recommended_section_focus_id": "<section id>",',
+    '  "recommended_focus": "<candidate-facing content. Empty string for LET_LEAD.>",',
+    '  "consumed_probe_id": "<probe id or empty string>",',
+    '',
+    '  "current_subtopic": "<3-5 word label for current sub-topic>",',
+    '  "consecutive_probes_on_subtopic": "<integer>",',
+    '',
+    '  "requirements_contract": {',
+    '    "locked": "<true | false>",',
+    '    "functional": ["<list of agreed functional requirements>"],',
+    '    "non_functional": ["<list of agreed NFRs>"],',
+    '    "in_scope": ["<list>"],',
+    '    "out_of_scope": ["<list>"],',
+    '    "locked_at_turn": "<turn number when locked, or null>"',
+    '  },',
+    '',
+    '  "breadth_coverage": {',
+    '    "components_mentioned": ["<list of design components candidate has raised>"],',
+    '    "components_missing": ["<list of in-scope components not yet addressed>"]',
+    '  },',
+    '',
+    '  "response_pace": "<fast | normal | slow | suspiciously_fast>",',
+    '  "pace_turns_tracked": "<integer — how many consecutive turns at this pace>",',
+    '',
+    '  "probe_observations": [',
+    '    {',
+    '      "id": "<short_snake_id>",',
+    '      "section_id": "<section id>",',
+    '      "observation": "<what candidate said, in their words>",',
+    '      "probe": "<follow-up question>",',
+    '      "difficulty": "<L1 | L2 | L3>",',
+    '      "probe_type": "<breadth | depth>"',
+    '    }',
+    '  ],',
+    '',
+    '  "flags": [',
+    '    {',
+    '      "type": "<green | red>",',
+    '      "section_id": "<section id>",',
+    '      "signal_id": "<signal id from config>",',
+    '      "note": "<brief evidence>"',
+    '    }',
+    '  ],',
+    '',
+    '  "momentum": "<hot | warm | cold>",',
+    '  "bar_trajectory": "<rising | flat | falling>",',
+    '  "performance_assessment": "<above_target | at_target | below_target | unclear>",',
+    '  "verdict_trajectory": "<strong_hire | hire | no_hire | strong_no_hire | insufficient_data>",',
+    '  "time_status": "<on_track | behind | critical>",',
+    '  "candidate_signal": "<driving | asked_question | block_complete | stuck | missing_breadth | rabbit_holing | procedural>",',
+    '  "interview_done": false,',
+    '  "notes": "<short free-text>"',
+    '}',
+  ].join('\n');
 
-Emit exactly this JSON and nothing else:
-
-{
-  "move": "<see Move Catalog>",
-  "difficulty": "<L1 | L2 | L3>",
-  "recommended_section_focus_id": "<section id>",
-  "recommended_focus": "<candidate-facing content. Empty string for LET_LEAD.>",
-  "consumed_probe_id": "<probe id or empty string>",
-
-  "current_subtopic": "<3-5 word label for current sub-topic>",
-  "consecutive_probes_on_subtopic": "<integer>",
-
-  "requirements_contract": {
-    "locked": "<true | false>",
-    "functional": ["<list of agreed functional requirements>"],
-    "non_functional": ["<list of agreed NFRs>"],
-    "in_scope": ["<list>"],
-    "out_of_scope": ["<list>"],
-    "locked_at_turn": "<turn number when locked, or null>"
-  },
-
-  "breadth_coverage": {
-    "components_mentioned": ["<list of design components candidate has raised>"],
-    "components_missing": ["<list of in-scope components not yet addressed>"]
-  },
-
-  "response_pace": "<fast | normal | slow | suspiciously_fast>",
-  "pace_turns_tracked": "<integer — how many consecutive turns at this pace>",
-
-  "probe_observations": [
-    {
-      "id": "<short_snake_id>",
-      "section_id": "<section id>",
-      "observation": "<what candidate said, in their words>",
-      "probe": "<follow-up question>",
-      "difficulty": "<L1 | L2 | L3>",
-      "probe_type": "<breadth | depth>"
-    }
-  ],
-
-  "flags": [
-    {
-      "type": "<green | red>",
-      "section_id": "<section id>",
-      "signal_id": "<signal id from config>",
-      "note": "<brief evidence>"
-    }
-  ],
-
-  "momentum": "<hot | warm | cold>",
-  "bar_trajectory": "<rising | flat | falling>",
-  "performance_assessment": "<above_target | at_target | below_target | unclear>",
-  "verdict_trajectory": "<strong_hire | hire | no_hire | strong_no_hire | insufficient_data>",
-  "time_status": "<on_track | behind | critical>",
-  "candidate_signal": "<driving | asked_question | block_complete | stuck | missing_breadth | rabbit_holing | procedural>",
-  "interview_done": false,
-  "notes": "<short free-text>"
-}`;
-
-  const blocks = [
+  // System block — byte-stable across every turn of one session. Sent as
+  // role=system so OpenRouter / DeepSeek auto-cache lands on a clean prefix.
+  // Anything turn-varying lives in the user block below.
+  const systemBlocks = [
     ROLE_BLOCK,
     '',
     outputSchemaBlock,
@@ -1046,9 +1003,7 @@ Emit exactly this JSON and nothing else:
     '',
     MOVE_CATALOG,
     '',
-    THREAD_DEPTH_RULE,
-    '',
-    BREADTH_VS_DEPTH_BLOCK,
+    PROBE_DISCIPLINE_BLOCK,
     '',
     EXIT_GATES_RULE,
     '',
@@ -1059,8 +1014,6 @@ Emit exactly this JSON and nothing else:
     SIGNAL_CLASSIFICATION,
     '',
     DECISION_ALGORITHM,
-    '',
-    HARD_RULES_SUMMARY,
     '',
     '=== INTERVIEW CONFIG ===',
     JSON.stringify(
@@ -1080,6 +1033,12 @@ Emit exactly this JSON and nothing else:
       2
     ),
     '',
+    'INTERVIEW PLAN — your structural roadmap (you decide WHEN to transition; the app does not):',
+    planLines.join('\n'),
+  ];
+
+  // User block — turn-varying state and the candidate's latest input.
+  const userBlocks = [
     '=== RUNTIME STATE ===',
     `WALL CLOCK:                ${interviewElapsedMin.toFixed(1)}m / ${interviewTotalMin}m (${interviewElapsedPct}%)`,
     `REMAINING:                 ~${minutesLeft.toFixed(1)}m`,
@@ -1119,9 +1078,6 @@ Emit exactly this JSON and nothing else:
     'ACTIVE FLAGS:',
     flagsBlock,
     '',
-    'INTERVIEW PLAN — your structural roadmap (you decide WHEN to transition; the app does not):',
-    planLines.join('\n'),
-    '',
     focusRubricBlock,
     '',
     'TRANSCRIPT (last 12 turns):',
@@ -1132,7 +1088,12 @@ Emit exactly this JSON and nothing else:
     `LATEST CANDIDATE MESSAGE: ${String(candidateMessage || '').slice(0, 1500)}`,
   ];
 
-  return blocks.filter((b) => b !== null && b !== undefined).join('\n');
+  const joinBlock = (arr) => arr.filter((b) => b !== null && b !== undefined).join('\n');
+
+  return {
+    system: joinBlock(systemBlocks),
+    user: joinBlock(userBlocks),
+  };
 }
 
 /* --------------------------- Capture call ----------------------------- */
@@ -1175,25 +1136,34 @@ export async function captureTurnEval({
   candidateMessage,
   interviewerReply,
 }) {
-  const prompt = buildPrompt({
+  const { system, user } = buildPrompt({
     config,
     interview,
     sessionState,
     candidateMessage,
     interviewerReply,
   });
+  const messages = [
+    { role: 'system', content: system },
+    { role: 'user', content: user },
+  ];
 
   const debugTrace = process.env.INTERVIEW_DEBUG_TRACE === '1';
   const startedAt = debugTrace ? Date.now() : 0;
+  let capturedUsage = null;
+  const onUsage = (u) => {
+    capturedUsage = u;
+  };
 
   let result;
   try {
     result = await invokeLLM({
-      prompt,
+      messages,
       response_json_schema: SCHEMA,
       modelTier: 'eval',
       temperature: 0.1,
       max_tokens: 1600,
+      onUsage,
     });
   } catch (err) {
     console.warn(`[evalCapture] failed: ${err?.message || err}`);
@@ -1223,9 +1193,11 @@ export async function captureTurnEval({
     if (debugTrace) {
       noop.__trace = {
         model: resolveOpenRouterModel('eval'),
-        input_prompt: prompt,
+        input_prompt: `${system}\n\n${user}`,
+        input_messages: messages,
         output_json: null,
         duration_ms: Date.now() - startedAt,
+        usage: capturedUsage,
         error: err?.message || String(err),
       };
     }
@@ -1303,9 +1275,11 @@ export async function captureTurnEval({
   if (debugTrace) {
     captured.__trace = {
       model: resolveOpenRouterModel('eval'),
-      input_prompt: prompt,
+      input_prompt: `${system}\n\n${user}`,
+      input_messages: messages,
       output_json: result,
       duration_ms: Date.now() - startedAt,
+      usage: capturedUsage,
     };
   }
 

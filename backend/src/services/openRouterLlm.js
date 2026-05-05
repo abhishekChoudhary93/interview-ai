@@ -49,8 +49,55 @@ function buildHeaders(apiKey) {
 }
 
 /**
+ * Pin OpenRouter provider routing when OPENROUTER_PROVIDERS is configured.
+ * Required for DeepSeek context caching — only DeepSeek's official infra
+ * implements it; third-party hosters of deepseek/* slugs do not.
+ */
+function applyProviderPin(body) {
+  const providers = Array.isArray(config.openRouterProviders)
+    ? config.openRouterProviders
+    : [];
+  if (providers.length > 0) {
+    body.provider = {
+      order: providers,
+      allow_fallbacks: false,
+    };
+  }
+}
+
+function debugTraceEnabled() {
+  return process.env.INTERVIEW_DEBUG_TRACE === '1';
+}
+
+/**
+ * Log a one-line summary of a completed call's usage. Gated on
+ * INTERVIEW_DEBUG_TRACE so we don't spam in production.
+ */
+function logUsageSummary({ tier, model, usage }) {
+  if (!debugTraceEnabled() || !usage) return;
+  const fields = [
+    usage.prompt_tokens != null ? `prompt_tokens=${usage.prompt_tokens}` : '',
+    usage.completion_tokens != null ? `completion_tokens=${usage.completion_tokens}` : '',
+    usage.prompt_cache_hit_tokens != null
+      ? `prompt_cache_hit_tokens=${usage.prompt_cache_hit_tokens}`
+      : '',
+    usage.prompt_cache_miss_tokens != null
+      ? `prompt_cache_miss_tokens=${usage.prompt_cache_miss_tokens}`
+      : '',
+    usage.cache_discount != null ? `cache_discount=${usage.cache_discount}` : '',
+    usage.cost != null ? `cost=${usage.cost}` : '',
+  ].filter(Boolean);
+  if (fields.length === 0) return;
+  console.log(`[llm] tier=${tier || 'default'} model=${model} ${fields.join(' ')}`);
+}
+
+/**
  * Non-streaming chat completion via OpenRouter (OpenAI-compatible).
  * Returns parsed JSON when a schema is provided, otherwise plain text.
+ *
+ * `onUsage(usage)` — optional callback fired with OpenRouter's usage block
+ * (prompt/completion/cache stats) before this function returns. Plumbed
+ * through llmInvoke so callers can attach it to debug traces.
  */
 export async function invokeOpenRouterLLM({
   messages,
@@ -60,6 +107,8 @@ export async function invokeOpenRouterLLM({
   temperature = 0.6,
   top_p,
   max_tokens,
+  modelTier,
+  onUsage,
 }) {
   const apiKey = config.openRouterApiKey;
   if (!apiKey) {
@@ -69,14 +118,17 @@ export async function invokeOpenRouterLLM({
   const baseMessages = normalizeMessages({ messages, prompt });
   const finalMessages = appendJsonDirective(baseMessages, schema);
 
+  const resolvedModel = model || config.openRouterModel;
   const body = {
-    model: model || config.openRouterModel,
+    model: resolvedModel,
     messages: finalMessages,
     temperature,
+    usage: { include: true },
   };
   if (typeof top_p === 'number') body.top_p = top_p;
   if (typeof max_tokens === 'number') body.max_tokens = max_tokens;
   if (schema?.properties) body.response_format = { type: 'json_object' };
+  applyProviderPin(body);
 
   const res = await fetch(`${config.openRouterBaseUrl}/chat/completions`, {
     method: 'POST',
@@ -101,6 +153,18 @@ export async function invokeOpenRouterLLM({
     throw new Error('OpenRouter returned empty content');
   }
 
+  const usage = data.usage || null;
+  if (usage) {
+    logUsageSummary({ tier: modelTier, model: resolvedModel, usage });
+    if (typeof onUsage === 'function') {
+      try {
+        onUsage(usage);
+      } catch {
+        /* never let a usage callback throw past the LLM call */
+      }
+    }
+  }
+
   if (schema?.properties) {
     let parsed;
     try {
@@ -122,7 +186,9 @@ export async function invokeOpenRouterLLM({
  *
  * SSE protocol: each event is `data: <json>\n\n` where <json> is an OpenAI-style
  * chunk: `{ choices: [{ delta: { content: "..." } }] }`. Stream ends with
- * `data: [DONE]`.
+ * `data: [DONE]`. The penultimate chunk (with empty/null delta) carries
+ * the `usage` block when usage={include:true} is requested — we capture
+ * that and fire `onUsage(usage)` so callers can record cache stats.
  */
 export async function* streamOpenRouterLLM({
   messages,
@@ -132,6 +198,8 @@ export async function* streamOpenRouterLLM({
   top_p,
   max_tokens,
   signal,
+  modelTier,
+  onUsage,
 }) {
   const apiKey = config.openRouterApiKey;
   if (!apiKey) {
@@ -140,14 +208,17 @@ export async function* streamOpenRouterLLM({
 
   const finalMessages = normalizeMessages({ messages, prompt });
 
+  const resolvedModel = model || config.openRouterModel;
   const body = {
-    model: model || config.openRouterModel,
+    model: resolvedModel,
     messages: finalMessages,
     temperature,
     stream: true,
+    usage: { include: true },
   };
   if (typeof top_p === 'number') body.top_p = top_p;
   if (typeof max_tokens === 'number') body.max_tokens = max_tokens;
+  applyProviderPin(body);
 
   const res = await fetch(`${config.openRouterBaseUrl}/chat/completions`, {
     method: 'POST',
@@ -167,6 +238,19 @@ export async function* streamOpenRouterLLM({
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
+  let capturedUsage = null;
+
+  const emitUsage = () => {
+    if (!capturedUsage) return;
+    logUsageSummary({ tier: modelTier, model: resolvedModel, usage: capturedUsage });
+    if (typeof onUsage === 'function') {
+      try {
+        onUsage(capturedUsage);
+      } catch {
+        /* never let a usage callback throw past the LLM call */
+      }
+    }
+  };
 
   try {
     while (true) {
@@ -186,7 +270,10 @@ export async function* streamOpenRouterLLM({
           .map((l) => l.slice(5).trim());
         if (dataLines.length === 0) continue;
         const payload = dataLines.join('\n');
-        if (payload === '[DONE]') return;
+        if (payload === '[DONE]') {
+          emitUsage();
+          return;
+        }
 
         let parsed;
         try {
@@ -194,12 +281,16 @@ export async function* streamOpenRouterLLM({
         } catch {
           continue; // OpenRouter occasionally injects keep-alive comments; ignore.
         }
+        if (parsed && parsed.usage) {
+          capturedUsage = parsed.usage;
+        }
         const delta = parsed.choices?.[0]?.delta?.content;
         if (typeof delta === 'string' && delta.length > 0) {
           yield delta;
         }
       }
     }
+    emitUsage();
   } finally {
     try {
       await reader.cancel();

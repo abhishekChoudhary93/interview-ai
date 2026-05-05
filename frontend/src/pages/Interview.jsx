@@ -71,6 +71,20 @@ export default function Interview() {
   // BEFORE streaming a turn — otherwise a candidate who drew + sent within
   // 800ms ships a turn whose backend canvas_text is stale.
   const canvasRef = useRef(null);
+  // Timer id for the post-`done` /session/state poll that detects
+  // interview_done. Backend no longer ships an inline `state` SSE event
+  // (the Planner eval is fire-and-forget after res.end), so the frontend
+  // polls once a few seconds after onDone to discover end-of-interview.
+  // Cleared on next sendTurn / abort / unmount so we never double-fire
+  // finalizeAndNavigate.
+  const interviewDonePollRef = useRef(null);
+
+  const clearInterviewDonePoll = useCallback(() => {
+    if (interviewDonePollRef.current) {
+      clearTimeout(interviewDonePollRef.current);
+      interviewDonePollRef.current = null;
+    }
+  }, []);
 
   const mode = interview?.interview_mode || 'chat';
   const useVoiceOut = mode !== 'chat' && !voiceMuted;
@@ -148,15 +162,38 @@ export default function Interview() {
           /* ignore */
         }
       }
+      clearInterviewDonePoll();
       voice.cancel();
     };
-  }, [interviewId, navigate]);
+  }, [interviewId, navigate, clearInterviewDonePoll]);
 
   /* ---------- send a turn ---------- */
+
+  /**
+   * Tear down all "a turn is in flight" UI state and surface the error to
+   * the user as an interviewer-side system line. Used by both the SSE
+   * `error` event handler and the catch branch around streamInterviewSessionTurn.
+   * Must clear isStreaming + pendingCandidate so the textarea unlocks and
+   * Composer's send button leaves its disabled state — otherwise a single
+   * mid-stream failure permanently freezes the session (sendTurn early-
+   * returns when isStreaming is true).
+   */
+  const failTurnWithMessage = useCallback((msg) => {
+    setStreamingInterviewer(null);
+    setIsStreaming(false);
+    setPendingCandidate(null);
+    setMessages((prev) => [
+      ...prev,
+      { role: 'interviewer', content: msg, kind: 'system_error' },
+    ]);
+  }, []);
 
   const sendTurn = useCallback(
     async (text) => {
       if (!text.trim() || isStreaming) return;
+      // Cancel any pending interview-done poll from a prior turn so we don't
+      // race a finalize against a fresh in-flight turn.
+      clearInterviewDonePoll();
       setIsProcessing(true);
       setIsStreaming(true);
       setPendingCandidate({ content: text, kind: 'answer' });
@@ -201,45 +238,65 @@ export default function Interview() {
             setStreamingInterviewer(null);
             setIsStreaming(false);
             if (useVoiceOut) voice.flushPending();
+
+            // The backend Planner eval is fire-and-forget after res.end(),
+            // so an inline interview_done flag is no longer streamed back.
+            // Poll /session/state once after a window long enough for a
+            // typical eval to land (~1-3s). If the Planner declared the
+            // interview complete on this turn, auto-navigate to the report.
+            interviewDonePollRef.current = setTimeout(async () => {
+              interviewDonePollRef.current = null;
+              try {
+                const snap = await getInterviewSessionState(interviewId);
+                if (snap?.session_state?.interview_done) {
+                  void finalizeAndNavigate();
+                }
+              } catch (err) {
+                // Non-fatal — the user can still End & report manually.
+                console.warn('[interview_done poll] failed:', err);
+              }
+            }, 3000);
           },
-          onState: ({ interview_done }) => {
-            if (interview_done) {
-              // Auto-finalize the interview the moment the LLM signals "done".
-              void finalizeAndNavigate();
-            }
-          },
+          // Backend no longer emits an inline `state` SSE event (Planner
+          // eval runs after res.end()). Kept as a no-op so a future
+          // protocol revival doesn't crash the client.
+          onState: () => {},
           onError: (msg) => {
             console.warn('[stream] error:', msg);
-            setStreamingInterviewer(null);
-            setIsStreaming(false);
-            setPendingCandidate(null);
-            // Bubble the error back into the chat as an interviewer line so the
-            // user gets feedback rather than a blank screen.
-            setMessages((prev) => [
-              ...prev,
-              {
-                role: 'interviewer',
-                content:
-                  'Sorry — the connection dropped before I could reply. Try sending your message again.',
-                kind: 'system_error',
-              },
-            ]);
+            failTurnWithMessage(
+              'Sorry — the connection dropped before I could reply. Try sending your message again.'
+            );
           },
         });
       } catch (e) {
         if (controller.signal.aborted) {
-          // User-initiated abort — clean state silently.
+          // User-initiated abort — clean state silently. pendingCandidate
+          // also has to clear here, otherwise the abandoned candidate bubble
+          // hangs around above an empty composer.
           setStreamingInterviewer(null);
           setIsStreaming(false);
+          setPendingCandidate(null);
         } else {
+          // fetch reject (network down) or mid-stream reader throw. Without
+          // this branch isStreaming stays true forever and every future
+          // sendTurn early-returns, locking the session until reload.
           console.error('[stream] failed:', e);
+          failTurnWithMessage(
+            'Sorry — something went wrong sending that. Please try again.'
+          );
         }
       } finally {
         setIsProcessing(false);
         abortRef.current = null;
       }
     },
-    [interviewId, isStreaming, useVoiceOut]
+    [
+      interviewId,
+      isStreaming,
+      useVoiceOut,
+      clearInterviewDonePoll,
+      failTurnWithMessage,
+    ]
   );
 
   const handleAbortStream = useCallback(() => {
@@ -250,8 +307,9 @@ export default function Interview() {
         /* ignore */
       }
     }
+    clearInterviewDonePoll();
     voice.cancel();
-  }, [voice]);
+  }, [voice, clearInterviewDonePoll]);
 
   /* ---------- notes & canvas autosave ---------- */
 

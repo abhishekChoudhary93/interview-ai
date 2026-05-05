@@ -35,6 +35,16 @@ function makeInterview(overrides = {}) {
   };
 }
 
+/**
+ * buildPrompt now returns { system, user } so the OpenRouter request can ship
+ * the static prefix as role=system (cache-friendly). Tests that assert on
+ * "the whole prompt" use this helper to flatten both blocks into one string.
+ */
+function buildPromptString(opts) {
+  const { system, user } = buildPrompt(opts);
+  return `${system}\n${user}`;
+}
+
 function baseCaptured(overrides = {}) {
   return {
     move: 'LET_LEAD',
@@ -196,7 +206,7 @@ test('config: every section has an exit_gate.require_any list with valid signal 
 test('buildPrompt renders v5 hard-rules / phases / pace / breadth / 45-min sections', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview();
-  const prompt = buildPrompt({
+  const prompt = buildPromptString({
     config,
     interview,
     sessionState: {},
@@ -220,10 +230,12 @@ test('buildPrompt renders v5 hard-rules / phases / pace / breadth / 45-min secti
   assert.match(prompt, /Requirements Contract/);
   assert.match(prompt, /immutable for the session/);
 
-  // Breadth.
+  // Probe discipline (v5.1: thread-depth + breadth-vs-depth merged into one block).
   assert.match(prompt, /BREADTH COVERAGE:/);
   assert.match(prompt, /breadth_coverage/);
-  assert.match(prompt, /Breadth vs\. Depth Discipline/);
+  assert.match(prompt, /Probe Discipline/);
+  assert.match(prompt, /Breadth vs\. Depth/);
+  assert.match(prompt, /Thread depth/);
 
   // Pace.
   assert.match(prompt, /Response Pace Calibration/);
@@ -241,7 +253,7 @@ test('buildPrompt renders v5 hard-rules / phases / pace / breadth / 45-min secti
 test('buildPrompt INTERVIEW CONFIG block includes required_breadth_components and variant_scenarios', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview();
-  const prompt = buildPrompt({
+  const prompt = buildPromptString({
     config,
     interview,
     sessionState: {},
@@ -257,7 +269,7 @@ test('buildPrompt INTERVIEW CONFIG block includes required_breadth_components an
 test('buildPrompt: STEP 6 — EARN BEFORE NAME (config-vocabulary) replaces SCALE FACT INJECTION CHECK', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview();
-  const prompt = buildPrompt({
+  const prompt = buildPromptString({
     config,
     interview,
     sessionState: {},
@@ -275,7 +287,7 @@ test('buildPrompt: STEP 6 — EARN BEFORE NAME (config-vocabulary) replaces SCAL
 test('buildPrompt: STEP 6 covers all config categories with non-scale BAD examples', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview();
-  const prompt = buildPrompt({
+  const prompt = buildPromptString({
     config,
     interview,
     sessionState: {},
@@ -294,7 +306,7 @@ test('buildPrompt: STEP 6 covers all config categories with non-scale BAD exampl
 test('buildPrompt: STEP 6 includes once-earned GOOD examples (engage-freely half)', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview();
-  const prompt = buildPrompt({
+  const prompt = buildPromptString({
     config,
     interview,
     sessionState: {},
@@ -310,7 +322,7 @@ test('buildPrompt: STEP 6 includes once-earned GOOD examples (engage-freely half
 test('buildPrompt: STEP 7 — ONE MOVE PER DIRECTIVE with bundled-focus BAD examples', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview();
-  const prompt = buildPrompt({
+  const prompt = buildPromptString({
     config,
     interview,
     sessionState: {},
@@ -326,32 +338,31 @@ test('buildPrompt: STEP 7 — ONE MOVE PER DIRECTIVE with bundled-focus BAD exam
   assert.match(prompt, /queue the other in `notes` for a future turn/);
 });
 
-test('buildPrompt: HARD_RULES_SUMMARY carries Earn-before-name + One move per turn + candidate-facing sub-blocks', () => {
+test('buildPrompt: earn-before-name + one-move-per-directive + candidate-facing rules survive in DECISION_ALGORITHM (v5.1: HARD_RULES_SUMMARY consolidated away)', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview();
-  const prompt = buildPrompt({
+  const prompt = buildPromptString({
     config,
     interview,
     sessionState: {},
     candidateMessage: '',
     interviewerReply: '',
   });
-  // New sub-block headings.
-  assert.match(prompt, /Earn-before-name \(config vocabulary\):/);
-  assert.match(prompt, /One move per turn:/);
-  assert.match(prompt, /recommended_focus is candidate-facing:/);
-  // Engage-freely framing in the summary too.
-  assert.match(prompt, /push HARD on it — that's the interview/);
-  // The old narrow heading is gone.
-  assert.doesNotMatch(prompt, /^Scale facts:$/m);
-  // `notes` is Planner-only field reminder.
+  // STEP 6 — earn-before-name still anchors the engage-freely framing.
+  assert.match(prompt, /STEP 6 — EARN BEFORE NAME/);
+  // STEP 7 — one move per directive still present.
+  assert.match(prompt, /STEP 7 — ONE MOVE PER DIRECTIVE/);
+  // STEP 11 — candidate-facing rule moved here from the dropped HARD_RULES_SUMMARY.
+  assert.match(prompt, /recommended_focus IS CANDIDATE-FACING/);
   assert.match(prompt, /`notes` is NEVER shown to the candidate/);
+  // Engage-freely framing.
+  assert.match(prompt, /push hard|push HARD/);
 });
 
 test('buildPrompt: subsequent STEP numbers shifted to make room for new STEP 7', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview();
-  const prompt = buildPrompt({
+  const prompt = buildPromptString({
     config,
     interview,
     sessionState: {},
@@ -381,7 +392,7 @@ test('buildPrompt requirements contract block reflects substrate state', () => {
       locked_at_turn: 5,
     },
   };
-  const prompt = buildPrompt({
+  const prompt = buildPromptString({
     config,
     interview,
     sessionState,
@@ -398,7 +409,7 @@ test('buildPrompt 45-MIN GATE flips to PASSED after 45 minutes', () => {
   const interview = makeInterview({
     session_started_at: new Date(Date.now() - 46 * 60_000),
   });
-  const prompt = buildPrompt({
+  const prompt = buildPromptString({
     config,
     interview,
     sessionState: {},
@@ -411,7 +422,7 @@ test('buildPrompt 45-MIN GATE flips to PASSED after 45 minutes', () => {
 test('buildPrompt FOCUS RUBRIC for deep_dive renders deep_dive_topics', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview();
-  const prompt = buildPrompt({
+  const prompt = buildPromptString({
     config,
     interview,
     sessionState: {
@@ -423,6 +434,110 @@ test('buildPrompt FOCUS RUBRIC for deep_dive renders deep_dive_topics', () => {
   assert.match(prompt, /Deep-dive topics/);
   assert.match(prompt, /id_generation/);
   assert.match(prompt, /redirect_critical_path/);
+});
+
+/* --------------------------- system/user split for prompt caching --- */
+
+test('buildPrompt: system block carries static rules + INTERVIEW CONFIG + INTERVIEW PLAN; turn-varying state stays in user', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview();
+  const { system, user } = buildPrompt({
+    config,
+    interview,
+    sessionState: {},
+    candidateMessage: 'How many users?',
+    interviewerReply: 'previous reply',
+  });
+
+  // System carries the restored output schema, all rule blocks, INTERVIEW
+  // CONFIG, and INTERVIEW PLAN (sections roadmap is session-stable).
+  assert.match(system, /# Output Schema/);
+  assert.match(system, /Emit exactly this JSON and nothing else/);
+  assert.match(system, /=== INTERVIEW CONFIG ===/);
+  assert.match(system, /INTERVIEW PLAN — your structural roadmap/);
+  assert.match(system, /STEP 9 — SELECT MOVE/);
+  assert.match(system, /Move Catalog/);
+
+  // System must NOT carry turn-varying values (would break cache prefix).
+  assert.doesNotMatch(system, /=== RUNTIME STATE ===/);
+  assert.doesNotMatch(system, /WALL CLOCK:/);
+  assert.doesNotMatch(system, /LATEST CANDIDATE MESSAGE:/);
+  assert.doesNotMatch(system, /TRANSCRIPT \(last 12 turns\):/);
+
+  // User carries runtime state, focus rubric, transcript, candidate input.
+  assert.match(user, /=== RUNTIME STATE ===/);
+  assert.match(user, /WALL CLOCK:/);
+  assert.match(user, /45-MIN GATE:/);
+  assert.match(user, /SECTION SCOREBOARD:/);
+  assert.match(user, /TRANSCRIPT \(last 12 turns\):/);
+  assert.match(user, /LATEST INTERVIEWER TURN: previous reply/);
+  assert.match(user, /LATEST CANDIDATE MESSAGE: How many users\?/);
+
+  // User must NOT carry the static rules (would dilute the cache split).
+  assert.doesNotMatch(user, /# Output Schema/);
+  assert.doesNotMatch(user, /=== INTERVIEW CONFIG ===/);
+  assert.doesNotMatch(user, /STEP 9 — SELECT MOVE/);
+});
+
+test('buildPrompt: system block is byte-identical across consecutive turns of one session — cache prefix stability', () => {
+  const config = loadInterviewConfig();
+  const sessionStartedAt = new Date(Date.now() - 10 * 60_000);
+
+  // Turn N — early state, candidate just clarified scope.
+  const interviewN = makeInterview({
+    session_started_at: sessionStartedAt,
+    conversation_turns: [
+      { role: 'interviewer', content: 'go' },
+      { role: 'candidate', content: 'I want to clarify scope.' },
+    ],
+  });
+  const sessionStateN = {
+    section_minutes_used: { requirements: 4 },
+    next_directive: { recommended_section_focus_id: 'requirements', difficulty: 'L2' },
+    response_pace: 'normal',
+    pace_turns_tracked: 1,
+  };
+
+  // Turn N+1 — wall clock moved, transcript grew, candidate said something
+  // new, scoreboard changed. NOTHING should leak into the system block.
+  const interviewN1 = makeInterview({
+    session_started_at: sessionStartedAt,
+    conversation_turns: [
+      { role: 'interviewer', content: 'go' },
+      { role: 'candidate', content: 'I want to clarify scope.' },
+      { role: 'interviewer', content: 'Sure — what is the read-to-write ratio you assume?' },
+      { role: 'candidate', content: 'Roughly 100:1 reads.' },
+    ],
+  });
+  const sessionStateN1 = {
+    section_minutes_used: { requirements: 7 },
+    next_directive: {
+      recommended_section_focus_id: 'requirements',
+      difficulty: 'L2',
+      current_subtopic: 'read-write ratio',
+      consecutive_probes_on_subtopic: 1,
+    },
+    response_pace: 'fast',
+    pace_turns_tracked: 2,
+  };
+
+  const a = buildPrompt({
+    config,
+    interview: interviewN,
+    sessionState: sessionStateN,
+    candidateMessage: 'I want to clarify scope.',
+    interviewerReply: 'go',
+  });
+  const b = buildPrompt({
+    config,
+    interview: interviewN1,
+    sessionState: sessionStateN1,
+    candidateMessage: 'Roughly 100:1 reads.',
+    interviewerReply: 'Sure — what is the read-to-write ratio you assume?',
+  });
+
+  assert.equal(a.system, b.system, 'system block must be byte-identical across turns of one session');
+  assert.notEqual(a.user, b.user, 'sanity: user block does change across turns');
 });
 
 /* --------------------------- deriveAnswerOnly ----------------------- */

@@ -48,8 +48,15 @@ export function startInterviewSession(clientId) {
  *   meta  → { turn_index }            once at start
  *   token → { delta }                 N times as tokens arrive
  *   done  → { interviewer_message }   once when stream completes
- *   state → { session_state, interview_done }   once after eval lands
  *   error → { message }               on failure
+ *
+ * The `state` event used to fire once after the Planner eval landed and
+ * carried interview_done. The backend now runs the Planner eval as
+ * fire-and-forget AFTER res.end() (so the user's UI unblocks immediately),
+ * so the inline `state` event is no longer emitted. Clients that need
+ * post-turn session state should poll GET /session/state on a short delay
+ * after `done`. The dispatch path for `state` is kept here so an old
+ * backend or a future protocol revival doesn't error the client.
  *
  * @param {string} clientId
  * @param {string} candidate_message

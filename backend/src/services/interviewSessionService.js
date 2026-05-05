@@ -159,23 +159,25 @@ export function appendInterviewerTurn(interview, content, kind = 'reply') {
 }
 
 /**
- * Background-callable: run the Planner LLM and persist its output onto the
- * interview row.
+ * Run the Planner LLM and apply its directive to the in-memory session_state.
  *
- * `executorTrace` (optional) carries the Executor's per-turn capture (system
- * prompt, history, accumulated reply, model, duration_ms). When the
- * `INTERVIEW_DEBUG_TRACE=1` env flag is set, this function assembles a
- * combined Executor + Planner debug entry and persists it onto
- * `session_state.debug_trace[]` (capped at 60 entries).
+ * Shared by both turn flows:
+ *   - T1 (post-stream, fire-and-forget background): wrapped by
+ *     `runBackgroundEvalCapture` which adds save + debug-trace assembly.
+ *   - T2+ (foreground, Planner-first): called by the route as
+ *     `runForegroundEvalCapture`. The route streams the Executor right after
+ *     this returns — the Executor reads the freshly-mutated `next_directive`
+ *     in-memory, so no save is needed between Planner and Executor.
+ *
+ * Does NOT save the doc and does NOT assemble debug trace — caller owns
+ * those (so T2+ can stitch a single debug entry combining Planner +
+ * Executor after both have run). The Planner's __trace is left attached
+ * to the returned `captured` for the caller to consume.
  */
-export async function runBackgroundEvalCapture(
+async function runPlannerInline(
   interview,
-  { config, candidateMessage, interviewerReply, candidateTurnIndex, executorTrace }
+  { config, candidateMessage, interviewerReply, candidateTurnIndex }
 ) {
-  // The Planner runs on every turn including T1. For procedural acks it will
-  // classify signal=procedural / performance=unclear / move=LET_LEAD; for
-  // substantive first turns it classifies normally. The per-section minutes
-  // accounting inside applyEvalToSessionState advances `last_turn_ts` itself.
   const captured = await captureTurnEval({
     config,
     interview,
@@ -189,7 +191,6 @@ export async function runBackgroundEvalCapture(
     candidateTurnIndex,
   });
 
-  // Hard turn-cap safety net.
   const turns = interview.session_state?.turn_count || 0;
   let forcedDone = interviewDone;
   if (turns >= HARD_TURN_CAP) {
@@ -197,38 +198,92 @@ export async function runBackgroundEvalCapture(
     forcedDone = true;
   }
 
-  // Debug trace assembly — gated, no overhead when disabled.
-  if (process.env.INTERVIEW_DEBUG_TRACE === '1') {
-    const ss = interview.session_state;
-    if (!Array.isArray(ss.debug_trace)) ss.debug_trace = [];
-    const plannerTrace = captured.__trace || null;
-    ss.debug_trace.push({
-      turn_index: candidateTurnIndex,
-      ts: new Date().toISOString(),
-      candidate_message: candidateMessage,
-      executor: executorTrace || null,
-      planner: plannerTrace
-        ? {
-            model: plannerTrace.model,
-            input_prompt: plannerTrace.input_prompt,
-            output_json: plannerTrace.output_json,
-            duration_ms: plannerTrace.duration_ms,
-            error: plannerTrace.error || null,
-            applied_directive: ss.next_directive || null,
-            recommended_section_focus_id: captured.recommended_section_focus_id || '',
-          }
-        : null,
-    });
-    if (ss.debug_trace.length > 60) ss.debug_trace = ss.debug_trace.slice(-60);
-    delete captured.__trace;
-  }
+  return { captured, interviewDone: forcedDone };
+}
+
+/**
+ * Assemble a combined Executor + Planner debug-trace entry on
+ * `session_state.debug_trace[]` (capped at 60). Gated by
+ * INTERVIEW_DEBUG_TRACE=1; no-op otherwise. Mutates `captured.__trace` (deletes
+ * it) so the caller doesn't accidentally persist the raw Planner trace twice.
+ */
+export function recordDebugTraceEntry(
+  interview,
+  { candidateTurnIndex, candidateMessage, captured, executorTrace }
+) {
+  if (process.env.INTERVIEW_DEBUG_TRACE !== '1') return;
+  const ss = interview.session_state;
+  if (!Array.isArray(ss.debug_trace)) ss.debug_trace = [];
+  const plannerTrace = captured?.__trace || null;
+  ss.debug_trace.push({
+    turn_index: candidateTurnIndex,
+    ts: new Date().toISOString(),
+    candidate_message: candidateMessage,
+    executor: executorTrace || null,
+    planner: plannerTrace
+      ? {
+          model: plannerTrace.model,
+          input_prompt: plannerTrace.input_prompt,
+          input_messages: plannerTrace.input_messages || null,
+          output_json: plannerTrace.output_json,
+          duration_ms: plannerTrace.duration_ms,
+          usage: plannerTrace.usage || null,
+          error: plannerTrace.error || null,
+          applied_directive: ss.next_directive || null,
+          recommended_section_focus_id: captured?.recommended_section_focus_id || '',
+        }
+      : null,
+  });
+  if (ss.debug_trace.length > 60) ss.debug_trace = ss.debug_trace.slice(-60);
+  if (captured) delete captured.__trace;
+}
+
+/**
+ * Foreground variant — runs the Planner inline and returns. Caller owns
+ * doc.save() and debug-trace assembly. Used for T2+ (Planner-first per turn)
+ * so the Executor's next stream reads the freshly-mutated `next_directive`.
+ */
+export async function runForegroundEvalCapture(interview, opts) {
+  return runPlannerInline(interview, opts);
+}
+
+/**
+ * Background-callable: run the Planner LLM and persist its output onto the
+ * interview row.
+ *
+ * Used for T1 only in the v5 Planner-first flow — T1's Executor reply is
+ * the deterministic problem-statement handoff (Opening Protocol), so
+ * Planner classification of T1 is signal-only and runs after the SSE
+ * stream ends to keep the user's UI snappy.
+ *
+ * `executorTrace` (optional) carries the Executor's per-turn capture. When
+ * INTERVIEW_DEBUG_TRACE=1 is set, this function assembles the combined
+ * Executor + Planner debug entry via `recordDebugTraceEntry`.
+ */
+export async function runBackgroundEvalCapture(
+  interview,
+  { config, candidateMessage, interviewerReply, candidateTurnIndex, executorTrace }
+) {
+  const { captured, interviewDone } = await runPlannerInline(interview, {
+    config,
+    candidateMessage,
+    interviewerReply,
+    candidateTurnIndex,
+  });
+
+  recordDebugTraceEntry(interview, {
+    candidateTurnIndex,
+    candidateMessage,
+    captured,
+    executorTrace,
+  });
 
   interview.markModified('session_state');
   await interview.save();
 
   return {
     captured,
-    interviewDone: forcedDone,
+    interviewDone,
   };
 }
 

@@ -50,6 +50,8 @@ function pickModel(input) {
  * @param {number} [input.temperature]
  * @param {number} [input.top_p]
  * @param {number} [input.max_tokens]
+ * @param {(usage:object)=>void} [input.onUsage] subscribe to per-call usage
+ *        stats (prompt/completion tokens, cache hit/miss, cache_discount).
  */
 export async function invokeLLM(input) {
   const resolvedModel = pickModel(input);
@@ -64,6 +66,8 @@ export async function invokeLLM(input) {
         temperature: input.temperature,
         top_p: input.top_p,
         max_tokens: input.max_tokens,
+        modelTier: input.modelTier,
+        onUsage: input.onUsage,
       });
     } catch (error) {
       // Local/dev fallback so a flaky upstream doesn't block authoring.
@@ -90,6 +94,8 @@ export async function invokeLLM(input) {
  * @param {number} [input.top_p]
  * @param {number} [input.max_tokens]
  * @param {AbortSignal} [input.signal]
+ * @param {(usage:object)=>void} [input.onUsage] subscribe to per-call usage
+ *        stats; fired once when the SSE stream ends.
  * @returns {AsyncIterable<string>}
  */
 export async function* streamLLM(input) {
@@ -104,6 +110,8 @@ export async function* streamLLM(input) {
         top_p: input.top_p,
         max_tokens: input.max_tokens,
         signal: input.signal,
+        modelTier: input.modelTier,
+        onUsage: input.onUsage,
       });
       return;
     } catch (error) {

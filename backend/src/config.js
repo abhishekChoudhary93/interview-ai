@@ -119,6 +119,15 @@ export const config = {
   openRouterOpeningModel: envString('OPENROUTER_OPENING_MODEL', 'openai/gpt-4o-mini'),
   /** Cross-session history signal extraction (interviewCompleteService). */
   openRouterExtractionModel: envString('OPENROUTER_EXTRACTION_MODEL', ''),
+  /**
+   * Pin OpenRouter provider routing for ALL tiers. Comma-separated provider
+   * names in priority order (e.g. "DeepSeek"). When set, requests use
+   * provider.order = [...] with allow_fallbacks=false. Required for DeepSeek
+   * context caching, since only DeepSeek's official infra supports it — any
+   * fallback to Fireworks / Together / Novita / DeepInfra disables caching.
+   * Leave empty to let OpenRouter auto-route.
+   */
+  openRouterProviders: parseOrigins(envString('OPENROUTER_PROVIDERS', '')),
   /** When true or a hop count, Express trusts X-Forwarded-* from proxies (see README). */
   trustProxy: parseTrustProxy(),
   /** ISO country unknown → use this market (US | EU | IN | ROW). */

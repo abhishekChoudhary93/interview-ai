@@ -417,7 +417,13 @@ test('Directive block placeholder when next_directive is null (opening turn)', (
     interview: { interview_type: 'system_design', interview_mode: 'chat' },
     sessionState: {},
   });
-  assert.match(prompt, /\(no directive — opening turn; follow the Opening Protocol section above\)/);
+  // Post-OPENING-PROTOCOL refactor: T0 is now a single LLM-generated message
+  // (intro + problem in one), so there's no "follow the Opening Protocol"
+  // line. The placeholder tells the LLM to ack minimally without introducing
+  // new content — the Planner takes over from the next turn.
+  assert.match(prompt, /no Planner directive yet — opening turn/);
+  assert.match(prompt, /Acknowledge the candidate minimally/);
+  assert.match(prompt, /do NOT re-deliver the problem statement/);
 });
 
 test('Directive block emits answer_only instruction when answer_only=true', () => {
@@ -559,44 +565,36 @@ test('Directive block carries NO PROACTIVE SUMMARIZATION rule (T7 fabrication fi
   assert.match(prompt, /its absence means do not summarize/);
 });
 
-/* --------------------------- Opening Protocol ----------------------- */
+/* --------------------------- Opening Protocol REMOVED -------------- */
 
-test('Opening Protocol (T1 only): renders the reference text verbatim regardless of candidate input', () => {
+test('Opening Protocol block is REMOVED — T0 is now a single LLM-generated message', () => {
+  // Post-refactor, the OPENING PROTOCOL block (which previously embedded the
+  // problem brief verbatim and told the Executor to render it on T1) is
+  // gone. The opening message is generated end-to-end by generateOpeningLine
+  // as one combined intro+problem turn, eliminating the two-message robotic
+  // handoff. The Executor system prompt should no longer contain it.
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
     config,
     interview: { interview_type: 'system_design', interview_mode: 'chat' },
     sessionState: {},
   });
-  assert.match(prompt, /Opening Protocol \(active on T1 only\)/);
-  assert.match(prompt, /Reply with the reference text above VERBATIM\. Word-for-word\./);
+  assert.doesNotMatch(prompt, /# Opening Protocol/);
+  assert.doesNotMatch(prompt, /Reply with the reference text above VERBATIM/);
 });
 
-test('Opening Protocol (T1 only): explicitly forbids the "Got it. Continue." rubber-stamp on a substantive first turn (Planner-first covers redirects from T2)', () => {
+test('Problem reference block carries the problem brief (replaces Opening Protocol DATA embed)', () => {
+  // The candidate-facing problem still appears in the Executor's reference
+  // material via the # Problem block — but as reference data the Executor
+  // uses to anchor follow-ups, not as a verbatim-render directive.
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
     config,
     interview: { interview_type: 'system_design', interview_mode: 'chat' },
     sessionState: {},
   });
-  // The candidate jumping to HLD on their very first message no longer earns
-  // a rubber-stamp ack — Planner-first will issue a redirect on T2.
-  assert.match(prompt, /Got it\. Continue/);
-  assert.match(prompt, /do NOT say|Do NOT say/);
-  assert.match(prompt, /Planner will see their substantive content on the next turn/);
-});
-
-test('Opening Protocol embeds config.problem.opening_prompt verbatim as DATA', () => {
-  const config = loadInterviewConfig();
-  const prompt = buildSystemPrompt({
-    config,
-    interview: { interview_type: 'system_design', interview_mode: 'chat' },
-    sessionState: {},
-  });
-  assert.match(prompt, /<<</);
-  assert.match(prompt, />>>/);
-  // Pull a stable phrase from the v5 url_shortener opening_prompt.
-  assert.match(prompt, /design a URL shortener/);
+  assert.match(prompt, /# Problem/);
+  assert.match(prompt, /URL [Ss]hortener/);
 });
 
 /* --------------------------- Channel register ----------------------- */
@@ -655,7 +653,7 @@ test('Canvas snapshot with content marks the diagram as the source of truth', ()
 
 /* --------------------------- Section ordering / safety ------------- */
 
-test('Sections appear in the correct v5.2 order (Directive renders LAST, after all reference data and canvas)', () => {
+test('Sections appear in the correct order (Directive renders LAST, after all reference data and canvas)', () => {
   const config = loadInterviewConfig();
   const prompt = buildSystemPrompt({
     config,
@@ -666,31 +664,29 @@ test('Sections appear in the correct v5.2 order (Directive renders LAST, after a
   const idxHumanFeel = prompt.indexOf('# The Human Feel');
   const idxHardRules = prompt.indexOf('# Hard Output Rules');
   const idxAnti = prompt.indexOf('# Six Anti-Patterns');
-  const idxOpening = prompt.indexOf('# Opening Protocol');
   const idxSectionPlan = prompt.indexOf('# Section Plan');
   const idxCanvas = prompt.indexOf("# Candidate's current diagram");
   const idxDirective = prompt.indexOf('# Directive');
 
   assert.ok(idxRole >= 0);
   assert.ok(idxRole < idxHumanFeel);
-  // Hard Output Rules + Anti-Patterns appear right after Human Feel, BEFORE
-  // Opening Protocol — so the model has read the bundling and
-  // earn-before-name rules before any move-rendering.
+  // Hard Output Rules + Anti-Patterns appear right after Human Feel — so
+  // the model has read the bundling and earn-before-name rules before any
+  // reference data / move-rendering.
   assert.ok(idxHumanFeel < idxHardRules, 'Hard Output Rules must follow Human Feel');
   assert.ok(idxHardRules < idxAnti, 'Anti-Patterns must follow Hard Output Rules');
-  assert.ok(idxAnti < idxOpening, 'Anti-Patterns must precede Opening Protocol');
-  // v5.2: the Directive is now the LAST block in the prompt. Reference data
-  // (Section Plan, Canvas, etc.) renders before the Directive so recency bias
-  // works FOR the operative instruction, not against it. This is the fix for
-  // the T9 failure where the buried-mid-prompt directive was overridden by
-  // chat-history conversational momentum.
-  assert.ok(idxOpening < idxSectionPlan, 'Opening Protocol must precede Section Plan');
+  assert.ok(idxAnti < idxSectionPlan, 'Anti-Patterns must precede Section Plan');
+  // The Directive renders LAST. Reference data (Section Plan, Canvas, etc.)
+  // renders before the Directive so recency bias works FOR the operative
+  // instruction, not against it.
   assert.ok(idxSectionPlan < idxCanvas, 'Section Plan must precede Canvas');
   assert.ok(idxCanvas < idxDirective, 'Canvas must precede Directive (Directive renders LAST)');
-  // The Directive really must be the last block — nothing meaningful after it.
   assert.ok(idxDirective > 0, 'Directive must be present');
   const tailFromDirective = prompt.slice(idxDirective);
-  assert.doesNotMatch(tailFromDirective, /# (Section Plan|Candidate's current diagram|Hard Output Rules|Six Anti-Patterns|Opening Protocol|Difficulty Register|Channel|Problem|Scope|Scale Facts|Fault Scenarios|Raise-Stakes Prompts|Variant Scenarios|Requirements Contract Closing)/);
+  assert.doesNotMatch(
+    tailFromDirective,
+    /# (Section Plan|Candidate's current diagram|Hard Output Rules|Six Anti-Patterns|Difficulty Register|Channel|Problem|Scope|Scale Facts|Fault Scenarios|Raise-Stakes Prompts|Variant Scenarios|Requirements Contract Closing)/
+  );
 });
 
 test('Prompt under 19,000 characters with a complete v5 directive (token budget sanity)', () => {

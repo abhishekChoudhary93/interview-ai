@@ -17,8 +17,6 @@
  * block). Otherwise it acks short and probes.
  */
 
-import { buildProblemHandoff } from './interviewConfig.js';
-
 const ROLE_AND_MISSION_TEMPLATE = (interviewer) => `# What You Are
 You are ${interviewer.name}, ${interviewer.title} at ${interviewer.company}. You are a real person running a real interview — not a system, not a bot, not a rubric. You've done hundreds of these and you're genuinely curious what this candidate can do.
 
@@ -329,48 +327,18 @@ function formatSectionPlan(config) {
 }
 
 /**
- * T1-only Opening Protocol. In v5 Planner-first, T1 is the deterministic
- * problem-statement handoff: the candidate's first message after the intro
- * line is treated as a procedural ack and the Executor renders the curated
- * problem statement verbatim. From T2 onward, the Planner runs BEFORE the
- * Executor for every turn, so a fresh `# Directive` block is always present
- * and this protocol is silently bypassed.
- */
-function formatOpeningProtocol(config) {
-  const opening = buildProblemHandoff(config);
-  return [
-    '# Opening Protocol (active on T1 only)',
-    '',
-    'This section applies ONLY when ALL of the following are true:',
-    "  - The conversation history shows exactly one prior interviewer message (the intro line, \"Hi, I'm <name>...\"), AND",
-    '  - The Directive block below contains no Planner directive (or says "no directive — opening turn").',
-    'If a Planner directive is present, IGNORE this entire section and follow the Directive instead.',
-    '',
-    'Reference text — the curated problem statement (DATA, not behavior):',
-    '<<<',
-    opening,
-    '>>>',
-    '',
-    "Reply with the reference text above VERBATIM. Word-for-word. No additions, no summarization, no preamble, no follow-up. The reference text is already self-contained — including its own invitation to begin.",
-    '',
-    "Even if the candidate's first message contains substantive content (e.g. they jumped ahead and said \"I'll start with the high level design\"), still render the problem statement verbatim. Do NOT acknowledge their framing, do NOT say \"Got it. Continue.\" — the Planner will see their substantive content on the next turn and emit a redirect directive then. Your job here is just to deliver the problem.",
-    '',
-    'This opens the requirements section. The Planner takes it from the next turn onward.',
-  ].join('\n');
-}
-
-/**
  * Render the Planner's most recent JSON directive as a # Directive block.
  * The block ALWAYS renders. When there is no `next_directive`, the body is
- * a literal placeholder line — the LLM reads this to know the Opening
- * Protocol section above is active.
+ * a literal placeholder line — the LLM reads this to know the opening turn
+ * is in flight (no Planner directive yet) and should ack minimally without
+ * introducing new content.
  */
 function formatDirective(sessionState) {
   const d = sessionState?.next_directive;
   if (!d || !d.move) {
     return [
       '# Directive (your move this turn)',
-      '(no directive — opening turn; follow the Opening Protocol section above)',
+      '(no Planner directive yet — opening turn. Acknowledge the candidate minimally, in persona, in 1 sentence. Do NOT introduce new content, do NOT advance sections, do NOT re-deliver the problem statement. The Planner takes over from the next turn.)',
     ].join('\n');
   }
 
@@ -480,7 +448,6 @@ export function buildSystemPrompt({ config, interview, sessionState }) {
     HUMAN_FEEL_BLOCK,
     HARD_OUTPUT_RULES,
     ANTI_PATTERNS,
-    formatOpeningProtocol(config),
     includeContractClosing ? REQUIREMENTS_CONTRACT_CLOSING_BLOCK : null,
     DIFFICULTY_REGISTER,
     CONVERSATIONAL_BLOCK,

@@ -1,8 +1,13 @@
 import { loadInterviewConfig, INTERVIEW_CONFIG_ID } from './interviewConfig.js';
-import { streamInterviewerReply, generateOpeningLine } from './interviewConverse.js';
+import {
+  streamInterviewerReply,
+  generateOpeningLine,
+  warmExecutorPrefix,
+} from './interviewConverse.js';
 import {
   captureTurnEval,
   applyEvalToSessionState,
+  warmPlannerPrefix,
 } from './interviewEvalCapture.js';
 
 /**
@@ -114,6 +119,13 @@ export async function startInterviewSession(interview) {
   interview.markModified('interview_config');
   await interview.save();
 
+  // Eagerly warm both LLM caches in parallel while the candidate is reading
+  // the opening message. Both helpers swallow their own errors so a missing
+  // API key or upstream hiccup never blocks the session start. We do NOT
+  // await — the HTTP response should return immediately.
+  void warmExecutorPrefix({ config, interview });
+  void warmPlannerPrefix({ config, interview });
+
   return {
     interviewer_message: openingText,
     session_state: interview.session_state,
@@ -146,10 +158,10 @@ export function appendInterviewerTurn(interview, content, kind = 'reply') {
   if (!interview.session_state) interview.session_state = {};
   interview.session_state.turn_count = (interview.session_state.turn_count || 0) + 1;
 
-  // Opening protocol phase transition: any reply emitted while phase is
-  // `awaiting_ack` advances to `in_progress`. The Executor LLM handles the
-  // opening turn uniformly via the OPENING PROTOCOL block in its system
-  // prompt — there is no `kind` discrimination here.
+  // Opening phase transition: any reply emitted while phase is
+  // `awaiting_ack` advances to `in_progress`. T0 is the LLM-generated
+  // combined intro+problem message; from T2 onward the Planner-first flow
+  // governs every reply.
   if (interview.session_state.opening_phase === 'awaiting_ack') {
     interview.session_state.opening_phase = 'in_progress';
   }
@@ -189,6 +201,7 @@ async function runPlannerInline(
   const { interviewDone } = applyEvalToSessionState(interview, captured, {
     config,
     candidateTurnIndex,
+    candidateMessage,
   });
 
   const turns = interview.session_state?.turn_count || 0;
@@ -251,10 +264,10 @@ export async function runForegroundEvalCapture(interview, opts) {
  * Background-callable: run the Planner LLM and persist its output onto the
  * interview row.
  *
- * Used for T1 only in the v5 Planner-first flow — T1's Executor reply is
- * the deterministic problem-statement handoff (Opening Protocol), so
- * Planner classification of T1 is signal-only and runs after the SSE
- * stream ends to keep the user's UI snappy.
+ * Used for T1 only — T1's Executor reply is a minimal acknowledgement of
+ * the candidate's first message (the intro+problem was already delivered
+ * as T0), so Planner classification of T1 is signal-only and runs after
+ * the SSE stream ends to keep the user's UI snappy.
  *
  * `executorTrace` (optional) carries the Executor's per-turn capture. When
  * INTERVIEW_DEBUG_TRACE=1 is set, this function assembles the combined

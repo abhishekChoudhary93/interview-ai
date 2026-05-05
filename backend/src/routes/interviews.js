@@ -263,8 +263,9 @@ router.post('/:clientId/session/start', async (req, res) => {
  *   event: error data: { message }               on failure
  *
  * v5 Planner-first flow:
- *   T1 (first candidate turn): Executor streams the deterministic
- *     problem-statement handoff via the Opening Protocol. Planner runs as
+ *   T1 (first candidate turn): Executor streams a minimal in-persona
+ *     acknowledgement of the candidate's first message (the intro+problem
+ *     was already delivered as T0 by generateOpeningLine). Planner runs as
  *     fire-and-forget AFTER res.end() (signal-only — its directive will be
  *     overwritten by T2's foreground Planner run anyway).
  *   T2+ : Planner runs SYNCHRONOUSLY before the Executor stream so the
@@ -347,8 +348,8 @@ router.post('/:clientId/session/turn', async (req, res) => {
         foregroundCaptured = result.captured;
       } catch (err) {
         // If the Planner fails, continue with whatever next_directive was
-        // already on the doc. The Executor still has the Opening Protocol
-        // / prior directive to fall back on. The miss gets logged.
+        // already on the doc. The Executor still has the prior directive
+        // to fall back on. The miss gets logged.
         console.warn('[session/turn] foreground planner eval failed:', err);
       }
 
@@ -434,10 +435,11 @@ router.post('/:clientId/session/turn', async (req, res) => {
     // End the SSE stream NOW so the user's UI unblocks immediately.
     res.end();
 
-    // T1 only — fire-and-forget Planner eval. T1's Executor reply is the
-    // deterministic problem-statement handoff (Opening Protocol), so we
-    // don't need Planner BEFORE the stream. Its directive is signal-only
-    // because T2 will overwrite next_directive via its foreground run.
+    // T1 only — fire-and-forget Planner eval. T1's Executor reply is just
+    // a minimal acknowledgement of the candidate's first message (intro +
+    // problem was already delivered as T0), so we don't need Planner
+    // BEFORE the stream. Its directive is signal-only because T2 will
+    // overwrite next_directive via its foreground run.
     if (isT1) {
       const evalPromise = (async () => {
         try {

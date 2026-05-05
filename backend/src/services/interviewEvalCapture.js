@@ -811,7 +811,18 @@ STEP 11 — WRITE recommended_focus
 STEP 12 — UPDATE VERDICT, TRAJECTORY, FLAGS
   Commit performance_assessment on every substantive turn.
   Update verdict_trajectory.
-  Max 2 probes, 2 flags, 1 consumed_probe_id per turn.`;
+  Max 2 probes, 2 flags, 1 consumed_probe_id per turn.
+
+  FLAG EMISSION IS MANDATORY ON SUBSTANTIVE TURNS.
+  A substantive turn is one whose candidate_signal is in {driving, missing_breadth, rabbit_holing, block_complete, stuck}. On every such turn you MUST emit at least one entry in \`flags\` whenever the focus section's rubric defines good_signals or weak_signals that match the evidence on the table — and the URL-shortener config defines them on every section. Examples that MUST be flagged the moment they appear:
+    - Candidate jumps to architecture / HLD before the contract is locked → red \`premature_arch\`
+    - Candidate gives no NFRs unprompted → red \`no_self_direction\` (when prompted to and still no NFRs) or green \`nfr_awareness\` (when they raise latency / availability / consistency on their own)
+    - Candidate quantifies QPS / read-write ratio unprompted → green \`estimation\` and/or \`read_write_ratio\`
+    - Candidate separates write API from redirect service → green \`read_write_separation\`
+    - Candidate places cache on the redirect path → green \`caching_placement\`
+    - Candidate names a concrete SLO (p99, availability %) → green \`slo_defined\`
+    - Candidate is vague on monitoring ("we'd add some dashboards") → red (weak_signal)
+  If you cannot confidently file a flag, it is a sign the candidate_signal classification is wrong (likely \`procedural\` or \`unclear\`), not a sign the bar isn't moving. Do not silently skip — either file the flag or downgrade the signal classification. Empty \`flags\` on a driving / block_complete / stuck / missing_breadth turn is a Planner failure.`;
 
 /* --------------------------- Planner prompt --------------------------- */
 
@@ -1377,6 +1388,271 @@ function appendFlags(sessionState, flagsList, turnIndex, focusFallbackId) {
   return added;
 }
 
+/* --------------------------- Substrate backstop guards --------------- */
+
+/**
+ * Quit-signal regex. Matches an explicit candidate request to end / stop the
+ * interview. We intentionally keep it tight — false positives downgrade
+ * substantive turns to CLOSE, which is a worse failure mode than the rare
+ * miss on phrasing we didn't anticipate.
+ */
+const QUIT_SIGNAL_REGEX =
+  /\b(?:let'?s end|let'?s stop|i\s+(?:quit|am\s+done|'?m\s+done)|end\s+(?:the|this)\s+interview|stop\s+(?:the|this)\s+interview|i'?m\s+(?:gonna|going\s+to)\s+stop|i'?m\s+done\s+here)\b/i;
+
+/**
+ * Moves whose focus content is by-design grounded in config vocabulary. The
+ * earn-before-name rule does not apply here; the leak guard skips these.
+ *   - ANSWER_AND_RELEASE: candidate asked a direct scope/scale question;
+ *     the focus IS the config fact.
+ *   - INJECT_FAULT / RAISE_STAKES / INJECT_VARIANT: the focus IS one of
+ *     config.{fault_scenarios,raise_stakes_prompts,variant_scenarios}.
+ */
+const LEAK_CARVE_OUT_MOVES = new Set([
+  'ANSWER_AND_RELEASE',
+  'INJECT_FAULT',
+  'RAISE_STAKES',
+  'INJECT_VARIANT',
+]);
+
+/**
+ * Build a phrase list to scan `recommended_focus` for. Each phrase is a
+ * normalized lowercase substring; if the candidate has not used it yet, a
+ * match counts as a seeding leak. Phrases are derived from:
+ *   - config.required_breadth_components (raw + space-separated + common
+ *     synonym expansions for the URL-shortener problem)
+ *   - config.sections[].deep_dive_topics[] (label + id)
+ *   - config.sections[].signals[] (id verbatim — these are private rubric
+ *     labels and should never appear in candidate-facing text)
+ *   - config.scale_facts[].value (extracted numeric tokens with units)
+ *
+ * For breadth components we restrict to the *missing* set when a snapshot
+ * is available — components the candidate has already raised are by
+ * definition earned and shouldn't trigger.
+ */
+function buildLeakPhrases(config, sessionState) {
+  const phrases = [];
+  const seen = new Set();
+  const push = (kind, raw) => {
+    const tok = String(raw || '').toLowerCase().trim();
+    if (!tok || tok.length < 3) return;
+    if (seen.has(tok)) return;
+    seen.add(tok);
+    phrases.push({ kind, token: tok });
+  };
+
+  const missing = Array.isArray(sessionState?.breadth_coverage?.components_missing)
+    ? sessionState.breadth_coverage.components_missing
+    : Array.isArray(config?.required_breadth_components)
+      ? config.required_breadth_components
+      : [];
+  for (const c of missing) {
+    const raw = String(c).toLowerCase();
+    push('breadth', raw);
+    push('breadth', raw.replace(/_/g, ' '));
+    if (raw.includes('id_generation')) {
+      push('breadth', 'slug generation');
+      push('breadth', 'id generation');
+      push('breadth', 'id allocator');
+    }
+    if (raw.includes('cach')) {
+      push('breadth', 'cache');
+      push('breadth', 'caching');
+    }
+    if (raw.includes('ttl') || raw.includes('expiry')) {
+      push('breadth', 'ttl');
+      push('breadth', 'expiry');
+    }
+    if (raw.includes('analytics')) {
+      push('breadth', 'analytics');
+      push('breadth', 'click count');
+    }
+    if (raw.includes('redirect_service')) {
+      push('breadth', 'redirect service');
+    }
+    if (raw.includes('slug_storage')) {
+      push('breadth', 'slug storage');
+    }
+    if (raw.includes('write_api')) {
+      push('breadth', 'write api');
+    }
+  }
+
+  for (const sec of Array.isArray(config?.sections) ? config.sections : []) {
+    for (const t of Array.isArray(sec?.deep_dive_topics) ? sec.deep_dive_topics : []) {
+      const id = String(t?.id || '').toLowerCase();
+      const label = String(t?.label || '').toLowerCase();
+      if (label.length >= 4) push('topic', label);
+      if (id.length >= 5) push('topic', id.replace(/_/g, ' '));
+    }
+    for (const s of Array.isArray(sec?.signals) ? sec.signals : []) {
+      const id = String(s?.id || '').toLowerCase();
+      if (id.length >= 5) {
+        push('signal', id);
+        push('signal', id.replace(/_/g, ' '));
+      }
+    }
+  }
+
+  for (const f of Array.isArray(config?.scale_facts) ? config.scale_facts : []) {
+    const v = String(f?.value || '');
+    const matches =
+      v.match(/~?\d[\d,.]*\s*(?:million|billion|thousand|k|m|b|ms|%|bytes?|:[0-9]+|sec(?:onds?)?)?/gi) ||
+      [];
+    for (const m of matches) {
+      const tok = m.replace(/^~/, '').trim();
+      if (tok.length >= 2) push('scale', tok.toLowerCase());
+    }
+  }
+
+  return phrases;
+}
+
+/**
+ * Compile every candidate-authored utterance in the conversation into a
+ * single lowercase string for fast substring containment checks. The leak
+ * guard treats anything that has appeared in a candidate turn as "earned"
+ * vocabulary the Planner is free to push on. Interviewer turns do NOT
+ * count — once Alex names a thing, the candidate hasn't earned it.
+ */
+function compileCandidateText(interview, currentCandidateMessage = '') {
+  const turns = Array.isArray(interview?.conversation_turns)
+    ? interview.conversation_turns
+    : [];
+  const parts = [];
+  for (const t of turns) {
+    if (String(t?.role || '').toLowerCase() === 'candidate') {
+      parts.push(String(t?.content || ''));
+    }
+  }
+  if (currentCandidateMessage) parts.push(String(currentCandidateMessage));
+  return parts.join(' \n ').toLowerCase();
+}
+
+function findLeakInFocus(focus, candidateText, phrases) {
+  const focusLc = String(focus || '').toLowerCase();
+  if (!focusLc) return null;
+  for (const p of phrases) {
+    if (focusLc.includes(p.token) && !candidateText.includes(p.token)) {
+      return p;
+    }
+  }
+  return null;
+}
+
+/**
+ * QUIT-SIGNAL GUARD. If the candidate explicitly asks to end the interview
+ * and the Planner did NOT route to CLOSE / SALVAGE_AND_MOVE, force a clean
+ * close. The 45-min CLOSE floor backstop downstream may then downgrade to
+ * HAND_OFF if the wall clock is too early — but at minimum the candidate
+ * stops getting another scope probe.
+ *
+ * Observed failure mode (URL-shortener trace, 2026-05-05): candidate said
+ * "Let's end the interview" → Planner replied with yet another requirements
+ * probe under a CHALLENGE_ASSUMPTION directive. The candidate signal was
+ * misclassified as procedural / driving instead of block_complete.
+ */
+function enforceQuitSignal(captured, candidateMessage) {
+  if (!QUIT_SIGNAL_REGEX.test(String(candidateMessage || ''))) return null;
+  // Carve-out: if the Planner already routed to CLOSE / SALVAGE_AND_MOVE /
+  // HAND_OFF / WRAP_TOPIC, leave it alone. Quit-aware moves don't need
+  // overriding.
+  const move = String(captured?.move || '').toUpperCase();
+  if (['CLOSE', 'SALVAGE_AND_MOVE', 'HAND_OFF', 'WRAP_TOPIC'].includes(move)) {
+    return null;
+  }
+  captured.move = 'CLOSE';
+  captured.candidate_signal = 'block_complete';
+  captured.interview_done = true;
+  // Blank the focus so the (downstream) 45-min backstop or the Executor's
+  // CLOSE rendering doesn't echo a probe question back. Reset subtopic
+  // counter so the next directive doesn't think we're rabbit-holing.
+  captured.recommended_focus = '';
+  captured.current_subtopic = '';
+  captured.consecutive_probes_on_subtopic = 0;
+  captured.notes = (captured.notes ? captured.notes + ' | ' : '') +
+    'quit_signal_detected: candidate explicitly asked to end the interview';
+  return { reason: 'quit_signal' };
+}
+
+/**
+ * THREAD-DEPTH BACKSTOP. Soft cap is 3 (Planner-prompt enforced). When the
+ * Planner emits `consecutive_probes_on_subtopic >= 4` (one over the soft
+ * cap), force PIVOT_ANGLE and reset the counter. This is the substrate
+ * safety net BRAIN.md §13 said we'd reintroduce when telemetry showed
+ * Planner drift — the URL-shortener trace shows it (4+ consecutive
+ * scope-listing probes).
+ */
+function enforceThreadDepthCap(captured) {
+  const depth = Number(captured?.consecutive_probes_on_subtopic) || 0;
+  if (depth < 4) return null;
+  const move = String(captured?.move || '').toUpperCase();
+  // Already pivoting / handing off / wrapping — let the Planner's choice stand.
+  if (['PIVOT_ANGLE', 'HAND_OFF', 'WRAP_TOPIC', 'CLOSE'].includes(move)) {
+    return null;
+  }
+  captured.move = 'PIVOT_ANGLE';
+  captured.recommended_focus = '';
+  captured.current_subtopic = '';
+  captured.consecutive_probes_on_subtopic = 0;
+  captured.notes = (captured.notes ? captured.notes + ' | ' : '') +
+    `thread_depth_backstop: forced PIVOT_ANGLE (depth was ${depth})`;
+  return { reason: 'thread_depth', depth };
+}
+
+/**
+ * SEEDING-LEAK BACKSTOP. Reintroduced from v3/v4 (BRAIN.md §13 lists it as
+ * "removed in v5; reintroduce as patch when telemetry shows drift" — the
+ * 2026-05-05 URL-shortener trace shows exactly that drift, e.g.
+ * `recommended_focus`: "What else does this system need to handle, especially
+ * around slug generation, caching, or expiry?" — three required-breadth
+ * components named in one sentence).
+ *
+ * When `recommended_focus` contains config-sourced vocabulary the candidate
+ * has not earned (and no carve-out applies), rewrite the focus to an OPEN
+ * form so the candidate gets to surface the topic themselves.
+ */
+function enforceSeedingLeakGuard(captured, config, interview, candidateMessage) {
+  const move = String(captured?.move || '').toUpperCase();
+  if (LEAK_CARVE_OUT_MOVES.has(move)) return null;
+  // HAND_OFF leaving requirements is the Requirements Contract Closing
+  // carve-out — the focus may legitimately summarize scope items the
+  // candidate has already agreed to.
+  if (move === 'HAND_OFF') {
+    const fid = String(captured?.recommended_section_focus_id || '').toLowerCase();
+    if (fid && fid !== 'requirements') return null;
+  }
+
+  const phrases = buildLeakPhrases(config, interview?.session_state);
+  if (phrases.length === 0) return null;
+
+  const candidateText = compileCandidateText(interview, candidateMessage);
+  const leak = findLeakInFocus(captured?.recommended_focus, candidateText, phrases);
+  if (!leak) return null;
+
+  // Rewrite based on leak kind. We deliberately blank the section focus so
+  // the existing focus-resolver picks up the prior section (we are NOT
+  // changing section, just the question we ask within it).
+  const original = String(captured.recommended_focus || '');
+  if (leak.kind === 'scale') {
+    captured.move = 'DRAW_NUMBERS';
+    captured.recommended_focus = 'Can you put numbers on that?';
+  } else if (leak.kind === 'breadth') {
+    captured.move = 'NUDGE_BREADTH';
+    captured.recommended_focus =
+      'Before we go deeper there, what else does this system need?';
+  } else {
+    // topic / signal — generic open redirect anchored on the candidate.
+    captured.move = 'GO_DEEPER';
+    captured.recommended_focus = 'Walk me through that piece in a bit more detail.';
+  }
+  captured.current_subtopic = '';
+  captured.consecutive_probes_on_subtopic = 0;
+  captured.notes =
+    (captured.notes ? captured.notes + ' | ' : '') +
+    `leak_guard: rewrote ${leak.kind} leak "${leak.token}" (was: ${original.slice(0, 80)})`;
+  return { reason: 'seeding_leak', kind: leak.kind, token: leak.token };
+}
+
 /* --------------------------- Persistence ------------------------------ */
 
 /**
@@ -1391,14 +1667,18 @@ function appendFlags(sessionState, flagsList, turnIndex, focusFallbackId) {
  *      overwrite (immutable for the session).
  *   2. Breadth coverage / response_pace / verdict_trajectory — overwrite
  *      each turn with the latest snapshot.
- *   3. 45-minute CLOSE floor — if move==='CLOSE' or interview_done===true
+ *   3. Substrate backstops (run before 45-min floor):
+ *        a. Quit-signal guard — explicit "let's end" → CLOSE.
+ *        b. Thread-depth backstop — depth>=4 → PIVOT_ANGLE.
+ *        c. Seeding-leak guard — unearned config vocabulary → rewrite to open form.
+ *   4. 45-minute CLOSE floor — if move==='CLOSE' or interview_done===true
  *      and wall clock < 45m AND not all sections at-or-over budget,
  *      downgrade to HAND_OFF to the highest-priority untouched section.
  */
 export function applyEvalToSessionState(
   interview,
   captured,
-  { config, candidateTurnIndex }
+  { config, candidateTurnIndex, candidateMessage = '' }
 ) {
   if (!interview.session_state) interview.session_state = {};
   const ss = interview.session_state;
@@ -1507,6 +1787,52 @@ export function applyEvalToSessionState(
   // --- Flags persistence.
   const flagsAddedCount = appendFlags(ss, captured.flags, candidateTurnIndex, focusId);
 
+  // --- Flag-emission observability. A "substantive" turn is one with a real
+  // bar signal (driving / missing_breadth / rabbit_holing / block_complete
+  // / stuck). The Planner prompt mandates >=1 flag on those turns when the
+  // focus rubric has signals defined; if we got zero, log a warning so we
+  // can spot prompt drift quickly.
+  const SUBSTANTIVE_SIGNALS = new Set([
+    'driving',
+    'missing_breadth',
+    'rabbit_holing',
+    'block_complete',
+    'stuck',
+  ]);
+  const focusHasRubricSignals =
+    Array.isArray(focus?.signals) && focus.signals.length > 0;
+  if (
+    flagsAddedCount === 0 &&
+    SUBSTANTIVE_SIGNALS.has(captured.candidate_signal) &&
+    focusHasRubricSignals
+  ) {
+    console.warn(
+      `[planner] zero flags on substantive turn ${candidateTurnIndex} (signal=${captured.candidate_signal}, section=${focusId}, move=${captured.move}) — prompt drift likely`
+    );
+  }
+
+  // --- Substrate backstops. Order matters: quit > thread depth > leak guard.
+  // A fired backstop short-circuits subsequent ones (no point checking for a
+  // leak in a focus we just blanked).
+  let quitGuardFired = null;
+  let threadDepthGuardFired = null;
+  let leakGuardFired = null;
+  quitGuardFired = enforceQuitSignal(captured, candidateMessage);
+  if (!quitGuardFired) {
+    threadDepthGuardFired = enforceThreadDepthCap(captured);
+    if (!threadDepthGuardFired) {
+      leakGuardFired = enforceSeedingLeakGuard(captured, config, interview, candidateMessage);
+    }
+  }
+  if (quitGuardFired || threadDepthGuardFired || leakGuardFired) {
+    const which = quitGuardFired
+      ? `quit_signal`
+      : threadDepthGuardFired
+        ? `thread_depth(depth=${threadDepthGuardFired.depth})`
+        : `leak_guard(${leakGuardFired.kind}:"${leakGuardFired.token}")`;
+    console.warn(`[planner] substrate guard fired: ${which}`);
+  }
+
   // --- Wall-clock for 45-minute CLOSE floor.
   const interviewStartTs = interview?.session_started_at
     ? new Date(interview.session_started_at).getTime()
@@ -1608,6 +1934,11 @@ export function applyEvalToSessionState(
     probe_observations_added: appendedProbeIds.length,
     flags_added_count: flagsAddedCount,
     close_blocked_reason: closeBlockedReason,
+    quit_guard_fired: !!quitGuardFired,
+    thread_depth_guard_fired: !!threadDepthGuardFired,
+    leak_guard_fired: leakGuardFired
+      ? `${leakGuardFired.kind}:${leakGuardFired.token}`
+      : null,
     interview_done: !!captured.interview_done,
     at: new Date(),
   });
@@ -1617,6 +1948,48 @@ export function applyEvalToSessionState(
   ss.last_eval_at = new Date();
 
   return { interviewDone };
+}
+
+/* --------------------------- Cache warmup ---------------------------- */
+
+/**
+ * Fire-and-forget LLM cache warmup against the Planner system prefix.
+ *
+ * The Planner's `system` block (rules + INTERVIEW CONFIG + INTERVIEW PLAN)
+ * is byte-stable across every turn of one session — that's what makes it
+ * a good cache key. We send one tiny request right after session start so
+ * DeepSeek's native context cache is hot before the candidate's first turn
+ * lands. Without this, the very first Planner call (T1's foreground eval)
+ * pays the full uncached input cost AND the full cold-prefix latency hit.
+ *
+ * NEVER throws — any failure is logged and swallowed.
+ */
+export function warmPlannerPrefix({ config, interview }) {
+  return Promise.resolve().then(async () => {
+    try {
+      const { system } = buildPrompt({
+        config,
+        interview: interview || {},
+        sessionState: interview?.session_state || {},
+        candidateMessage: '',
+        interviewerReply: '',
+      });
+      // Tiny user payload — the cache key is the system prefix, not the
+      // user content. JSON-mode is OFF here so we don't burn tokens
+      // synthesizing a full directive — we just want the prefix cached.
+      await invokeLLM({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: '.' },
+        ],
+        modelTier: 'eval',
+        temperature: 0,
+        max_tokens: 4,
+      });
+    } catch (err) {
+      console.warn('[warmup] planner prefix warmup failed (non-fatal):', err?.message || err);
+    }
+  });
 }
 
 export {

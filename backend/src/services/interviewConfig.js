@@ -33,10 +33,11 @@ export function reloadInterviewConfig() {
 export const INTERVIEW_CONFIG_ID = 'url_shortener';
 
 /**
- * Resolve the curated problem-statement string for the system prompt to
- * embed as DATA inside the OPENING PROTOCOL block. The Executor LLM reads
- * it and decides whether to render it verbatim or engage with the
- * candidate's substance instead — that decision lives in the LLM, not here.
+ * Resolve the curated problem-statement string. Used in two places:
+ *   - The opening LLM call (generateOpeningLine) embeds it as DATA so the
+ *     Executor produces a single in-persona intro+problem T0 message.
+ *   - The deterministic fallback opening (when the LLM is unavailable)
+ *     concatenates persona + this string into one warm message.
  */
 export function buildProblemHandoff(config) {
   const opening = String(config?.problem?.opening_prompt || '').trim();

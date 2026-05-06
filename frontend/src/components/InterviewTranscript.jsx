@@ -11,12 +11,14 @@ export default function InterviewTranscript({
   className = "",
   title = "Conversation",
   subtitle = "Live transcript",
+  autoScroll = true,
 }) {
   const bottomRef = useRef(null);
 
   useEffect(() => {
+    if (!autoScroll) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, autoScroll]);
 
   return (
     <div

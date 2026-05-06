@@ -47,7 +47,7 @@ function VerdictBadge({ verdict }) {
   const tone = (() => {
     if (v.startsWith("Strong Hire")) return "bg-emerald-500/15 text-emerald-500 border-emerald-500/30";
     if (v === "Hire") return "bg-emerald-500/10 text-emerald-600 border-emerald-500/20";
-    if (v === "No Hire") return "bg-amber-500/15 text-amber-600 border-amber-500/30";
+    if (v === "No Hire") return "bg-rose-500/10 text-rose-600 border-rose-500/20";
     if (v.startsWith("Strong No Hire")) return "bg-rose-500/15 text-rose-500 border-rose-500/30";
     return "bg-muted text-muted-foreground border-border/50";
   })();
@@ -110,6 +110,17 @@ function SectionScoreCard({ id, label, entry }) {
 
   const signals = Array.isArray(entry.signals) ? entry.signals : null;
   const weighted = entry.weighted_score || null;
+  const wentWell =
+    signals?.filter((s) => s && s.score != null && Number(s.score) >= 3) || [];
+  const wentBad =
+    signals?.filter((s) => s && s.score != null && Number(s.score) <= 2) || [];
+
+  const humanize = (s) =>
+    String(s || "")
+      .replace(/_/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^\w/, (c) => c.toUpperCase());
 
   return (
     <div className="rounded-2xl border border-border/40 bg-card/60 p-5">
@@ -122,12 +133,50 @@ function SectionScoreCard({ id, label, entry }) {
       </div>
       {signals ? (
         signals.length > 0 ? (
-          <ul className="space-y-3 border-t border-border/30 pt-3">
+          <div className="border-t border-border/30 pt-3 space-y-4">
+            {(wentWell.length > 0 || wentBad.length > 0) && (
+              <div className="grid sm:grid-cols-2 gap-3">
+                {wentWell.length > 0 && (
+                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-wide font-semibold text-emerald-600 dark:text-emerald-400">
+                      Went well
+                    </p>
+                    <ul className="mt-1 space-y-1">
+                      {wentWell.slice(0, 4).map((s, i) => (
+                        <li key={`ww-${i}`} className="text-xs text-muted-foreground">
+                          {humanize(s.signal || "Signal")}
+                          {s.evidence ? ` — ${String(s.evidence).slice(0, 140)}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {wentBad.length > 0 && (
+                  <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-wide font-semibold text-rose-600 dark:text-rose-400">
+                      Needs work
+                    </p>
+                    <ul className="mt-1 space-y-1">
+                      {wentBad.slice(0, 4).map((s, i) => (
+                        <li key={`wb-${i}`} className="text-xs text-muted-foreground">
+                          {humanize(s.signal || "Signal")}
+                          {s.evidence ? ` — ${String(s.evidence).slice(0, 140)}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <ul className="space-y-3">
             {signals.map((sig, i) => (
               <li key={`${id}-${i}`} className="flex gap-3">
                 <SignalScorePill score={sig.score ?? null} />
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-foreground">{sig.signal || "Signal"}</p>
+                  <p className="text-sm font-medium text-foreground">
+                    {humanize(sig.signal || "Signal")}
+                  </p>
                   {sig.evidence ? (
                     <p className="text-xs text-muted-foreground mt-1 italic">&ldquo;{sig.evidence}&rdquo;</p>
                   ) : null}
@@ -139,7 +188,8 @@ function SectionScoreCard({ id, label, entry }) {
                 </div>
               </li>
             ))}
-          </ul>
+            </ul>
+          </div>
         ) : entry.status === "not_reached" ? (
           <p className="text-xs text-muted-foreground italic border-t border-border/30 pt-3">
             Section not reached in this session.
@@ -186,6 +236,7 @@ export default function Report() {
   const interviewId = new URLSearchParams(window.location.search).get("id");
   const [interview, setInterview] = useState(null);
   const [expandedQ, setExpandedQ] = useState(null);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
 
   useEffect(() => {
     if (!interviewId) {
@@ -194,6 +245,11 @@ export default function Report() {
     }
     getInterview(interviewId).then(setInterview);
   }, [interviewId, navigate]);
+
+  useEffect(() => {
+    if (!interview) return;
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  }, [interviewId, interview]);
 
   const orchestrated = Boolean(interview && isOrchestratedSession(interview));
   const newShape = Boolean(interview && isNewShape(interview));
@@ -239,16 +295,6 @@ export default function Report() {
     return `${min}m ${sec}s`;
   };
 
-  const getGrade = (score) => {
-    if (score >= 90) return { grade: "A+", color: "text-emerald-500" };
-    if (score >= 80) return { grade: "A", color: "text-emerald-500" };
-    if (score >= 70) return { grade: "B+", color: "text-amber-500" };
-    if (score >= 60) return { grade: "B", color: "text-amber-500" };
-    if (score >= 50) return { grade: "C", color: "text-orange-500" };
-    return { grade: "D", color: "text-red-500" };
-  };
-
-  const { grade, color } = getGrade(interview.overall_score);
   const debrief = interview.debrief;
 
   return (
@@ -279,7 +325,7 @@ export default function Report() {
           <div className="flex-1 text-center lg:text-left">
             <div className="flex items-center justify-center lg:justify-start gap-3 mb-2">
               <h1 className="font-space text-2xl lg:text-3xl font-bold">Interview Report</h1>
-              <span className={`font-space text-3xl font-bold ${color}`}>{grade}</span>
+              {debrief?.verdict ? <VerdictBadge verdict={debrief.verdict} /> : null}
             </div>
             <p className="text-muted-foreground">
               {interview.role_title} at {interview.company}
@@ -291,7 +337,6 @@ export default function Report() {
               </span>
               <span>{reportedQuestionCountLabel(interview)}</span>
               <span>{formatInterviewType(interview.interview_type)} interview</span>
-              {debrief?.verdict ? <VerdictBadge verdict={debrief.verdict} /> : null}
             </div>
           </div>
         </div>
@@ -305,20 +350,40 @@ export default function Report() {
           transition={{ delay: 0.03 }}
           className="mb-8"
         >
-          <div className="flex items-center gap-2 mb-3">
-            <MessageSquareText className="w-5 h-5 text-accent" />
-            <h2 className="font-space text-lg font-semibold">Transcript</h2>
-          </div>
-          <InterviewTranscript
-            messages={transcriptMessages}
-            title="Interview transcript"
-            subtitle={
-              orchestrated
-                ? "Full conversation from this design session"
-                : "Questions and your answers as recorded"
-            }
-            className="min-h-0 w-full max-w-4xl max-h-[min(320px,40vh)] sm:max-h-[min(380px,46vh)] md:max-h-[min(420px,50vh)]"
-          />
+          <button
+            type="button"
+            onClick={() => setTranscriptOpen((v) => !v)}
+            className="w-full flex items-center justify-between gap-3 mb-3 rounded-xl border border-border/40 bg-card/40 px-4 py-3 hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <MessageSquareText className="w-5 h-5 text-accent shrink-0" />
+              <div className="min-w-0 text-left">
+                <p className="font-space text-lg font-semibold leading-none">Transcript</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {transcriptOpen ? "Hide transcript" : "Show transcript"}
+                </p>
+              </div>
+            </div>
+            {transcriptOpen ? (
+              <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />
+            ) : (
+              <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+            )}
+          </button>
+
+          {transcriptOpen ? (
+            <InterviewTranscript
+              messages={transcriptMessages}
+              title="Interview transcript"
+              subtitle={
+                orchestrated
+                  ? "Full conversation from this design session"
+                  : "Questions and your answers as recorded"
+              }
+              autoScroll={false}
+              className="min-h-0 w-full max-w-4xl max-h-[min(320px,40vh)] sm:max-h-[min(380px,46vh)] md:max-h-[min(420px,50vh)]"
+            />
+          ) : null}
         </motion.div>
       )}
 
@@ -338,7 +403,11 @@ export default function Report() {
               </span>
             ) : null}
           </div>
-          {debrief.verdict_reason || debrief.verdict_summary ? (
+          {debrief.summary ? (
+            <div className="text-sm text-muted-foreground leading-relaxed mb-4 whitespace-pre-line">
+              {debrief.summary}
+            </div>
+          ) : debrief.verdict_reason || debrief.verdict_summary ? (
             <p className="text-sm text-muted-foreground leading-relaxed mb-3">
               {debrief.verdict_reason || debrief.verdict_summary}
             </p>
@@ -406,15 +475,6 @@ export default function Report() {
                   <MomentList items={debrief.improvements} type="gap" />
                 </div>
               )}
-            </div>
-          ) : null}
-
-          {debrief.faang_bar_assessment ? (
-            <div className="rounded-2xl bg-muted/30 border border-border/50 p-5 mb-6">
-              <h3 className="font-space text-sm font-semibold mb-2">FAANG bar</h3>
-              <p className="text-sm text-muted-foreground leading-relaxed">
-                {debrief.faang_bar_assessment}
-              </p>
             </div>
           ) : null}
 

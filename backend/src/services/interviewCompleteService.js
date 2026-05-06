@@ -100,11 +100,11 @@ const SD_DEBRIEF_SCHEMA = {
   properties: {
     verdict: { type: 'string' },
     verdict_reason: { type: 'string' },
+    summary: { type: 'string' },
     overall_score: { type: 'string' },
     completion_note: { type: 'string' },
     section_scores: { type: 'object', additionalProperties: SD_SECTION_ENTRY_NESTED },
     top_moments: { type: 'array', items: SD_TOP_MOMENT },
-    faang_bar_assessment: { type: 'string' },
     next_session_focus: { type: 'array', items: SD_FOCUS_ITEM },
   },
 };
@@ -338,8 +338,9 @@ INSTRUCTIONS:
 1. For each section: weighted_score reflects the green/red flag balance against the target_level bar. 4.0 = at_target+ across all signals. 3.0 = at_target with one weak signal. 2.0 = below_target. 1.0 = no signal captured. Include status: completed | partial | not_reached.
 2. For each section's signals[] in section_scores: pull the signal_id from the flags above; quote the note as evidence; map the score using target_level: green flag = 3-4, red flag = 1-2, no flag = null.
 3. top_moments[]: 2-4 strongest moments and 1-3 clearest gaps from the flags + transcript. Each must reference a specific moment, not generic praise.
-4. faang_bar_assessment: 3-4 sentences on whether the candidate cleared the target_level bar. Reference both moments and gaps.
-5. next_session_focus: per-area items derived from red flags and unconsumed probes.
+4. summary: 6-7 crisp lines, FAANG-style debrief. Must cover: what was asked (problem + constraints), how the candidate approached it, the highest-signal green flags (bar clears) and red flags (bar misses), and why that supports the verdict. Ground every line in the flag evidence + transcript; no generic praise.
+5. verdict_reason: 2-3 sentences, grounded in the decisive green/red flags (use the full flag history; do not omit earlier flags).
+6. next_session_focus: per-area items derived from red flags and unconsumed probes.
 
 VERDICT RULES (non-negotiable):
 - completion < 40% OR duration < 15min  → verdict = "Incomplete — Cannot Assess"
@@ -352,7 +353,8 @@ VERDICT RULES (non-negotiable):
 Return:
 {
   "verdict": "...",
-  "verdict_reason": "2 sentences. Reference both score and one specific moment.",
+  "verdict_reason": "2-3 sentences. Grounded in decisive green/red flags + a specific moment.",
+  "summary": "6-7 lines, crisp. What was asked, what they did, key green/red signals, why verdict.",
   "overall_score": "x.x/4.0",
   "completion_note": "${sectionsAttempted} of ${totalSections} sections in ${totalMinutes} min.",
   "section_scores": {
@@ -372,7 +374,6 @@ Return:
   "top_moments": [
     { "type": "strength|gap", "moment": "what they said or did", "why_it_matters": "..." }
   ],
-  "faang_bar_assessment": "3-4 sentences on bar fit. Reference actual moments.",
   "next_session_focus": [
     { "area": "...", "reason": "why — reference transcript or red flag" }
   ]
@@ -392,6 +393,11 @@ export function normalizeSdStructuredDebrief(raw, sectionIds = [], coverageMap =
   const verdict_reason =
     typeof raw.verdict_reason === 'string' && raw.verdict_reason.trim()
       ? raw.verdict_reason.trim()
+      : '';
+
+  const summary =
+    typeof raw.summary === 'string' && raw.summary.trim()
+      ? raw.summary.trim()
       : '';
 
   const completion_note =
@@ -500,11 +506,11 @@ export function normalizeSdStructuredDebrief(raw, sectionIds = [], coverageMap =
   return {
     verdict,
     verdict_reason,
+    summary,
     overall_score,
     completion_note,
     section_scores,
     top_moments,
-    faang_bar_assessment: String(raw.faang_bar_assessment || '').trim(),
     next_session_focus,
     strengths: strengths.length ? strengths : [{ point: '—', evidence: '—' }],
     improvements: improvements.length ? improvements : [{ point: '—', evidence: '—' }],

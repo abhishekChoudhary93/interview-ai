@@ -1365,25 +1365,29 @@ function consumeProbeQueueItem(sessionState, probeId, turnIndex) {
 
 function appendFlags(sessionState, flagsList, turnIndex, focusFallbackId) {
   if (!sessionState.flags_by_section) sessionState.flags_by_section = {};
+  if (!Array.isArray(sessionState.flags_all)) sessionState.flags_all = [];
   let added = 0;
   for (const f of flagsList || []) {
     const sid = f.section_id || focusFallbackId;
     if (!sid) continue;
+    const row = {
+      type: f.type,
+      section_id: sid,
+      signal_id: f.signal_id,
+      note: f.note,
+      at_turn: turnIndex,
+    };
     if (!Array.isArray(sessionState.flags_by_section[sid])) {
       sessionState.flags_by_section[sid] = [];
     }
     sessionState.flags_by_section[sid].push({
-      type: f.type,
-      signal_id: f.signal_id,
-      note: f.note,
-      at_turn: turnIndex,
+      type: row.type,
+      signal_id: row.signal_id,
+      note: row.note,
+      at_turn: row.at_turn,
     });
+    sessionState.flags_all.push(row);
     added += 1;
-  }
-  // Cap per section at 24.
-  for (const sid of Object.keys(sessionState.flags_by_section)) {
-    const arr = sessionState.flags_by_section[sid];
-    if (arr.length > 24) sessionState.flags_by_section[sid] = arr.slice(-24);
   }
   return added;
 }

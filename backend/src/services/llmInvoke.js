@@ -54,11 +54,14 @@ function pickModel(input) {
  *        stats (prompt/completion tokens, cache hit/miss, cache_discount).
  */
 export async function invokeLLM(input) {
+  const startTime = Date.now();
   const resolvedModel = pickModel(input);
+
+  logger.info(`Starting LLM call with model: ${resolvedModel}`);
 
   if (config.openRouterApiKey) {
     try {
-      return await invokeOpenRouterLLM({
+      const result = await invokeOpenRouterLLM({
         messages: input.messages,
         prompt: input.prompt,
         response_json_schema: input.response_json_schema,
@@ -69,16 +72,25 @@ export async function invokeLLM(input) {
         modelTier: input.modelTier,
         onUsage: input.onUsage,
       });
+      const endTime = Date.now();
+      logger.info(`LLM call completed in ${endTime - startTime}ms with model: ${resolvedModel}`);
+      return result;
     } catch (error) {
       // Local/dev fallback so a flaky upstream doesn't block authoring.
       if (config.isLocalLike) {
         logUpstreamFallback(input.modelTier || 'default', resolvedModel, error);
+        const endTime = Date.now();
+        logger.info(`LLM call failed in ${endTime - startTime}ms with model: ${resolvedModel}`);
         return mockInvokeLLM(input);
       }
       throw error;
     }
+  } else {
+    const result = await mockInvokeLLM(input);
+    const endTime = Date.now();
+    logger.info(`Mock LLM call completed in ${endTime - startTime}ms`);
+    return result;
   }
-  return mockInvokeLLM(input);
 }
 
 /**
@@ -99,7 +111,10 @@ export async function invokeLLM(input) {
  * @returns {AsyncIterable<string>}
  */
 export async function* streamLLM(input) {
+  const startTime = Date.now();
   const resolvedModel = pickModel(input);
+
+  logger.info(`Starting streaming LLM call with model: ${resolvedModel}`);
 
   if (config.openRouterApiKey) {
     try {
@@ -113,15 +128,21 @@ export async function* streamLLM(input) {
         modelTier: input.modelTier,
         onUsage: input.onUsage,
       });
-      return;
+      const endTime = Date.now();
+      logger.info(`Streaming LLM call completed in ${endTime - startTime}ms with model: ${resolvedModel}`);
     } catch (error) {
       if (config.isLocalLike) {
         logUpstreamFallback(input.modelTier || 'default', resolvedModel, error);
         yield* mockStreamLLM(input);
-        return;
+        const endTime = Date.now();
+        logger.info(`Streaming LLM call failed in ${endTime - startTime}ms with model: ${resolvedModel}`);
+      } else {
+        throw error;
       }
-      throw error;
     }
+  } else {
+    yield* mockStreamLLM(input);
+    const endTime = Date.now();
+    logger.info(`Mock streaming LLM call completed in ${endTime - startTime}ms`);
   }
-  yield* mockStreamLLM(input);
 }

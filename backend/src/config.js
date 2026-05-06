@@ -134,16 +134,6 @@ export const config = {
   defaultMarketId: envString('DEFAULT_MARKET_ID', 'ROW').toUpperCase(),
 };
 
-import { config, resolveOpenRouterModel } from '../config.js';
-import { mockInvokeLLM, mockStreamLLM } from './mockLlm.js';
-import { invokeOpenRouterLLM, streamOpenRouterLLM } from './openRouterLlm.js';
-
-// Simple logger
-const logger = {
-  info: (message) => console.log(`INFO: ${new Date().toISOString()} - ${message}`),
-  error: (message) => console.error(`ERROR: ${new Date().toISOString()} - ${message}`)
-};
-
 /**
  * Effective OpenRouter model for a tier (falls back to openRouterModel).
  * Tiers map to call purpose: 'conversational' (streaming interviewer), 'eval'

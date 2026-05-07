@@ -17,6 +17,15 @@
  * block). Otherwise it acks short and probes.
  */
 
+const PROMPT = `
+You are an experienced Staff SWE running a real technical interview. Style: rigorous, warm, fast on push-back; ask follow-ups quietly rather than restating. 
+Your only job is to translate the Planner's Directive into natural, human speech. Do not add ANY concepts, questions, or information not explicitly present in the Focus.
+
+[Rules]
+1. Spoken text only: NO stage directions, asterisks, or brackets (e.g., never output *nods* or [silent]). 
+2. Make them work: NEVER provide examples, hints, or list metrics (like latency or cost) unless explicitly commanded. Keep queries strictly open-ended.
+3. Zero fluff: No greetings, pleasantries, or wrapping up unless instructed.
+`
 const ROLE_AND_MISSION_TEMPLATE = (interviewer) => `# What You Are
 You are ${interviewer.name}, ${interviewer.title} at ${interviewer.company}. You are a real person running a real interview — not a system, not a bot, not a rubric. You've done hundreds of these and you're genuinely curious what this candidate can do.
 
@@ -343,42 +352,16 @@ function formatDirective(sessionState) {
   }
 
   const move = String(d.move || '').toUpperCase();
-  const difficulty = String(d.difficulty || 'L2');
-  const sectionFocus = d.recommended_section_focus_id || '';
-  const moveLine = MOVE_GUIDANCE[move] || `Render the move "${move}" in 1-3 sentences anchored on the candidate's words.`;
-  const answerOnlyLine = d.answer_only
-    ? `\nThe candidate asked a direct question — ANSWER_AND_RELEASE: give exactly the one fact and STOP. Do NOT append a follow-up probe.`
-    : '';
-
   return [
-    '# Directive (your move this turn) — READ LAST, OBEY FIRST',
-    '',
-    'DIRECTIVE SUPREMACY.',
-    'The Move and Focus below ARE your reply this turn. The candidate\'s most recent message and your own prior reply may pull you toward a different topic; the directive overrides both. If your one move does not anchor on the Focus, you have failed the turn — even when the conversation seems to want something else.',
-    '',
-    '  - Move=LET_LEAD: minimal natural ack only ("mhm", "okay", "go on") or stay silent. Do NOT summarize. Do NOT redirect. Do NOT close a phase. Do NOT introduce new content. The Planner is letting the candidate drive on purpose.',
-    '  - Move=ANSWER_AND_RELEASE: give exactly the one fact in the Focus, then stop. Do NOT append a follow-up probe. Do NOT add a transition phrase. The Planner gives you the next question on the next turn.',
-    '  - Any other Move: render the Focus in 1-3 sentences, in persona, anchored on what the candidate said.',
-    '',
-    'NO UNAUTHORIZED SECTION ADVANCEMENT.',
-    `Your section this turn is ${sectionFocus || '(unspecified — hold the current section)'}. You may NOT change sections. Even if the candidate asks "can we move to the design now?" — if Move is anything other than HAND_OFF, you hold the line. Acknowledge minimally, render the Focus, do NOT pivot phases. Section transitions belong exclusively to HAND_OFF directives.`,
-    '',
-    'NO PROACTIVE SUMMARIZATION.',
-    'You do NOT proactively summarize scope, requirements, or any prior content unless the Move is HAND_OFF leaving requirements (in which case the Requirements Contract Closing section will be present in this prompt — its absence means do not summarize).',
-    '',
+    `# Directive (OBEY STRICTLY)
+    The Move and Focus below override all prior context. If your output does not anchor exactly to the Focus, you fail the turn. The Planner gives you the next question on the next turn.
+    - Move=LET_LEAD: Output a short verbal ack. Examples, but not limited to - ("mhm", "okay", "go on"). NO stage directions, summaries, questions, or new content. Let the candidate drive.
+    - Move=ANSWER_AND_RELEASE: State the fact in the Focus, then STOP. No follow-ups, no transition phrases. The Planner gives you the next question on the next turn.
+    - Any other Move: Render the Focus naturally in 1-3 sentences.
+    `,
     `Move:        ${move}`,
-    `Difficulty:  ${difficulty}`,
-    `Section:     ${sectionFocus || '(unspecified)'}`,
     `Focus:       "${d.recommended_focus || ''}"`,
-    `Momentum:    ${d.momentum || 'warm'}    Bar trajectory: ${d.bar_trajectory || 'flat'}    Time: ${d.time_status || 'on_track'}`,
-    d.response_pace ? `Pace:        ${d.response_pace}` : '',
-    '',
-    `Execute the move on that focus in 1-3 sentences, in persona, anchored on what the candidate ACTUALLY said.`,
-    '',
-    moveLine + answerOnlyLine,
-  ]
-    .filter((line) => line !== '')
-    .join('\n');
+  ] .join('\n');
 }
 
 /**
@@ -444,23 +427,7 @@ export function buildSystemPrompt({ config, interview, sessionState }) {
   const includeContractClosing = shouldIncludeContractClosingBlock(sessionState);
 
   const sections = [
-    formatRoleAndMission(config),
-    HUMAN_FEEL_BLOCK,
-    HARD_OUTPUT_RULES,
-    ANTI_PATTERNS,
-    includeContractClosing ? REQUIREMENTS_CONTRACT_CLOSING_BLOCK : null,
-    DIFFICULTY_REGISTER,
-    CONVERSATIONAL_BLOCK,
-    NUDGING_VS_CHALLENGING_BLOCK,
-    formatModeRegister(interview),
-    formatProblemReference(config),
-    formatScopeReference(config),
-    formatScaleFactsReference(config),
-    formatFaultScenariosReference(config),
-    formatRaiseStakesReference(config),
-    formatVariantScenariosReference(config),
-    formatSectionPlan(config),
-    formatCanvasSnapshot(interview),
+    PROMPT,
     formatDirective(sessionState),
   ].filter(Boolean);
 

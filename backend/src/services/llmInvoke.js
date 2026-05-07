@@ -22,6 +22,14 @@ function logUpstreamFallback(tier, model, error) {
 }
 
 /**
+ * Log latency for LLM calls to help debug performance issues.
+ */
+function logLatency(tier, model, latencyMs, stream = false) {
+  const type = stream ? 'stream' : 'invoke';
+  console.log(`[llm] ${type} latency - tier="${tier}" model="${model}": ${latencyMs}ms`);
+}
+
+/**
  * Recommended tier for each call purpose:
  *   conversational — streaming interviewer voice
  *   eval           — per-turn rubric capture (JSON)
@@ -55,10 +63,11 @@ function pickModel(input) {
  */
 export async function invokeLLM(input) {
   const resolvedModel = pickModel(input);
+  const startTime = Date.now();
 
   if (config.openRouterApiKey) {
     try {
-      return await invokeOpenRouterLLM({
+      const result = await invokeOpenRouterLLM({
         messages: input.messages,
         prompt: input.prompt,
         response_json_schema: input.response_json_schema,
@@ -69,6 +78,11 @@ export async function invokeLLM(input) {
         modelTier: input.modelTier,
         onUsage: input.onUsage,
       });
+      
+      const latencyMs = Date.now() - startTime;
+      logLatency(input.modelTier || 'default', resolvedModel, latencyMs, false);
+      
+      return result;
     } catch (error) {
       // Local/dev fallback so a flaky upstream doesn't block authoring.
       if (config.isLocalLike) {
@@ -78,6 +92,9 @@ export async function invokeLLM(input) {
       throw error;
     }
   }
+  
+  const latencyMs = Date.now() - startTime;
+  logLatency(input.modelTier || 'default', resolvedModel, latencyMs, false);
   return mockInvokeLLM(input);
 }
 
@@ -100,6 +117,7 @@ export async function invokeLLM(input) {
  */
 export async function* streamLLM(input) {
   const resolvedModel = pickModel(input);
+  const startTime = Date.now();
 
   if (config.openRouterApiKey) {
     try {
@@ -113,6 +131,9 @@ export async function* streamLLM(input) {
         modelTier: input.modelTier,
         onUsage: input.onUsage,
       });
+      
+      const latencyMs = Date.now() - startTime;
+      logLatency(input.modelTier || 'default', resolvedModel, latencyMs, true);
       return;
     } catch (error) {
       if (config.isLocalLike) {
@@ -123,5 +144,8 @@ export async function* streamLLM(input) {
       throw error;
     }
   }
+  
   yield* mockStreamLLM(input);
+  const latencyMs = Date.now() - startTime;
+  logLatency(input.modelTier || 'default', resolvedModel, latencyMs, true);
 }

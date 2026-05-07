@@ -330,7 +330,7 @@ router.post('/:clientId/session/turn', async (req, res) => {
     })();
 
     const candidateTurnIndex = appendCandidateTurn(doc, trimmedMessage);
-    const isT1 = candidateTurnIndex === 1;
+    const isT1 = candidateTurnIndex === -1;
 
     // T2+ : Planner-first. Run the Planner LLM synchronously so the Executor's
     // system prompt picks up the freshly-mutated next_directive in-memory.

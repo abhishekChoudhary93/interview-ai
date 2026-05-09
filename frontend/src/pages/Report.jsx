@@ -21,6 +21,7 @@ import AIFeedbackSummary from "../components/AIFeedbackSummary";
 import { ScoreRadarChart, ScoreProgressionChart, ScoreLegend } from "../components/ScoreBreakdownChart";
 import { formatInterviewType } from "@/utils/interviewLabels";
 import InterviewTranscript from "../components/InterviewTranscript";
+import ReportCanvas from "../components/ReportCanvas";
 import {
   isOrchestratedSession,
   reportedQuestionCountLabel,
@@ -237,6 +238,7 @@ export default function Report() {
   const [interview, setInterview] = useState(null);
   const [expandedQ, setExpandedQ] = useState(null);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [canvasOpen, setCanvasOpen] = useState(false);
 
   useEffect(() => {
     if (!interviewId) {
@@ -258,6 +260,10 @@ export default function Report() {
     if (!interview) return [];
     return buildReportTranscriptMessages(interview);
   }, [interview]);
+  const hasCanvasScene = useMemo(
+    () => Array.isArray(interview?.canvas_scene?.elements) && interview.canvas_scene.elements.length > 0,
+    [interview]
+  );
 
   const chartQuestions = useMemo(() => {
     if (!interview) return [];
@@ -384,6 +390,39 @@ export default function Report() {
               className="min-h-0 w-full max-w-4xl max-h-[min(320px,40vh)] sm:max-h-[min(380px,46vh)] md:max-h-[min(420px,50vh)]"
             />
           ) : null}
+        </motion.div>
+      )}
+
+      {/* Exdraw canvas */}
+      {hasCanvasScene && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.04 }}
+          className="mb-8"
+        >
+          <button
+            type="button"
+            onClick={() => setCanvasOpen((v) => !v)}
+            className="w-full flex items-center justify-between gap-3 mb-3 rounded-xl border border-border/40 bg-card/40 px-4 py-3 hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Target className="w-5 h-5 text-accent shrink-0" />
+              <div className="min-w-0 text-left">
+                <p className="font-space text-lg font-semibold leading-none">Exdraw canvas</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {canvasOpen ? "Hide canvas" : "Show canvas"}
+                </p>
+              </div>
+            </div>
+            {canvasOpen ? (
+              <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />
+            ) : (
+              <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+            )}
+          </button>
+
+          {canvasOpen ? <ReportCanvas scene={interview.canvas_scene} /> : null}
         </motion.div>
       )}
 

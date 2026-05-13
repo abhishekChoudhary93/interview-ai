@@ -40,11 +40,13 @@ export const INTERVIEW_CONFIG_ID = 'url_shortener';
  *     concatenates persona + this string into one warm message.
  */
 export function buildProblemHandoff(config) {
-  const opening = String(config?.problem?.opening_prompt || '').trim();
+  const root = config?.interview_config || config || {};
+  const problem = root?.problem || {};
+  const opening = String(problem?.opening_prompt || problem?.initial_prompt || '').trim();
   if (opening) return opening;
-  // Fallback in case opening_prompt is missing — synthesize from title/brief.
-  const title = String(config?.problem?.title || '').trim();
-  const brief = String(config?.problem?.brief || '').trim();
+  // Fallback in case initial_prompt is missing — synthesize from title/description.
+  const title = String(problem?.title || '').trim();
+  const brief = String(problem?.description || '').trim();
   const intro = title ? `Here's the problem: ${title}.` : `Here's the problem.`;
   const body = brief ? ` ${brief}` : '';
   return `${intro}${body} Take it from there — let's start with how you'd frame the requirements.`.trim();

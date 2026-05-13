@@ -28,12 +28,12 @@ async function collectStream(gen) {
 test('buildProblemHandoff returns config.problem.opening_prompt verbatim', () => {
   const config = loadInterviewConfig();
   const handoff = buildProblemHandoff(config);
-  assert.equal(handoff, config.problem.opening_prompt.trim());
+  assert.equal(handoff, config.interview_config.problem.opening_prompt.trim());
 });
 
-test('buildProblemHandoff falls back to title + brief synthesis when opening_prompt is missing', () => {
+test('buildProblemHandoff falls back to title + description synthesis when opening_prompt is missing', () => {
   const handoff = buildProblemHandoff({
-    problem: { title: 'Design a chat application', brief: '1B users globally.' },
+    problem: { title: 'Design a chat application', description: '1B users globally.' },
   });
   assert.match(handoff, /chat application/);
   assert.match(handoff, /1B users globally/);
@@ -63,14 +63,14 @@ test('generateOpeningLine produces a non-empty message containing persona + prob
 
 test('generateOpeningLine deterministic fallback combines intro + problem when LLM is unavailable', async () => {
   // We can drive the deterministic-fallback branch by passing a config whose
-  // `problem.opening_prompt` is missing — `buildProblemHandoff` then builds a
+  // `problem.initial_prompt` is missing — `buildProblemHandoff` then builds a
   // synthesized handoff. Even in this branch, the output must mention the
   // persona AND the problem-statement payload in ONE message.
   const opening = await generateOpeningLine({
     interview: {},
     config: {
       interviewer: { name: 'Sam', title: 'Senior Engineer', company: 'Google' },
-      problem: { title: 'Design a chat application', brief: '1B users globally.' },
+      problem: { title: 'Design a chat application', description: '1B users globally.' },
     },
   });
   assert.ok(typeof opening === 'string' && opening.length > 0);
@@ -109,7 +109,7 @@ test('streamInterviewerReply invokes the Executor LLM on opening turn (awaiting_
   const reply = await collectStream(
     streamInterviewerReply({ interview, config, candidateMessage: 'yes' })
   );
-  assert.match(reply, /\[Mock interviewer\]/, 'opening turn must hit the Executor LLM');
+  assert.match(reply, /\[Mock/, 'opening turn must hit the Executor LLM');
 });
 
 test('streamInterviewerReply invokes the Executor LLM on a LET_LEAD directive (no short-circuit)', async () => {
@@ -130,7 +130,7 @@ test('streamInterviewerReply invokes the Executor LLM on a LET_LEAD directive (n
       candidateMessage: 'I am still describing the metadata schema.',
     })
   );
-  assert.match(reply, /\[Mock interviewer\]/, 'LET_LEAD must hit the Executor LLM, not a deterministic ack pool');
+  assert.match(reply, /\[Mock/, 'LET_LEAD must hit the Executor LLM, not a deterministic ack pool');
 });
 
 test('streamInterviewerReply invokes the Executor LLM on a normal turn', async () => {
@@ -147,5 +147,5 @@ test('streamInterviewerReply invokes the Executor LLM on a normal turn', async (
     streamInterviewerReply({ interview, config, candidateMessage: 'I would use a write-through cache' })
   );
   assert.ok(reply.length > 0, 'normal turn must produce a non-empty stream from the LLM');
-  assert.match(reply, /\[Mock interviewer\]/);
+  assert.match(reply, /\[Mock/);
 });

@@ -24,34 +24,73 @@ export const YEARS_EXPERIENCE_BANDS = ['0_2', '2_5', '5_8', '8_12', '12_plus'];
  */
 const HARD_TURN_CAP = 60;
 
-/**
- * v5 Initial session_state shape. Section progression is not tracked here —
- * the Planner directs all transitions. We seed `opening_phase='awaiting_ack'`
- * so the deterministic conversational opening line goes out before any LLM
- * call.
- *
- * Persisted fields:
- *   opening_phase             — 'awaiting_ack' | 'in_progress'
- *   turn_count                — interviewer turn counter (HARD_TURN_CAP safety)
- *   session_wall_start_ms     — ms timestamp; basis for total elapsed
- *   last_turn_ts              — ms timestamp of previous turn (per-section delta)
- *   eval_history[]            — every Planner emission (capped 80)
- *   probe_queue               — { [sectionId]: [{id, observation, probe, probe_type, difficulty, added_at_turn, consumed, consumed_at_turn}] }
- *   flags_by_section          — { [sectionId]: [{type:'green'|'red', signal_id, note, at_turn}] }
- *   section_minutes_used      — { [sectionId]: minutes spent (advisory) }
- *   performance_by_section    — { [sectionId]: 'above_target'|'at_target'|'below_target' }
- *
- *   v5 NEW substrate fields:
- *   requirements_contract     — null until Planner emits locked=true; immutable thereafter
- *   breadth_coverage          — { components_mentioned[], components_missing[] } (snapshot)
- *   response_pace             — 'fast'|'normal'|'slow'|'suspiciously_fast' (latest)
- *   pace_turns_tracked        — integer; how many consecutive turns at this pace
- *   verdict_trajectory        — 'strong_hire'|'hire'|'no_hire'|'strong_no_hire'|'insufficient_data'
- *
- *   next_directive            — last-applied Planner directive; the Executor reads this
- *   interview_done            — terminal flag
- */
-function buildInitialSessionState(now) {
+function getRootConfig(config) {
+  return config?.interview_config || config || {};
+}
+
+function getPhases(config) {
+  const root = getRootConfig(config);
+  const phases = root?.interview_structure?.phases;
+  return Array.isArray(phases) ? phases : [];
+}
+
+function buildInitialCandidateProgress(config) {
+  const phases = getPhases(config);
+  const out = {};
+  for (const phase of phases) {
+    const phaseId = String(phase?.id || '').trim();
+    if (!phaseId) continue;
+    const topics = {};
+    const topicList = Array.isArray(phase?.topics) ? phase.topics : [];
+    for (const topic of topicList) {
+      const topicId = String(topic?.id || '').trim();
+      if (!topicId) continue;
+      topics[topicId] = { status: 'missing', flags: [] };
+    }
+    out[phaseId] = {
+      status: 'untouched',
+      topics,
+    };
+  }
+  return { phases: out };
+}
+
+function buildInitialRuntimeState(config) {
+  const phases = getPhases(config);
+  const firstPhase = phases[0] || {};
+  const firstTopic = Array.isArray(firstPhase?.topics) ? firstPhase.topics[0] : null;
+  const firstSubtopic = firstTopic && Array.isArray(firstTopic?.subtopics) ? firstTopic.subtopics[0] : null;
+  const currentPhase = String(firstPhase?.id || 'requirements');
+  return {
+    time_management: {
+      total_elapsed_minutes: 0,
+      total_remaining_minutes: 0,
+      current_phase: currentPhase,
+      phase_elapsed_minutes: 0,
+    },
+    conversation_hierarchy: {
+      current_phase: currentPhase,
+      current_topic: String(firstTopic?.id || 'interview_opening'),
+      turns_on_phase: 1,
+      turns_on_topic: 1,
+      current_subtopic: String(firstSubtopic?.id || 'candidate_opening'),
+      turns_on_subtopic: 1,
+    },
+  };
+}
+
+function computeTargetDurationMinutes(config) {
+  const root = getRootConfig(config);
+  if (typeof root?.time_budget?.total_min === 'number') return root.time_budget.total_min;
+  if (typeof root?.total_minutes === 'number') return root.total_minutes;
+  const phases = getPhases(config);
+  if (phases.length) {
+    return phases.reduce((sum, phase) => sum + (Number(phase?.budget_min) || 0), 0);
+  }
+  return 50;
+}
+
+function buildInitialSessionState(now, config) {
   return {
     opening_phase: 'awaiting_ack',
     turn_count: 0,
@@ -63,11 +102,10 @@ function buildInitialSessionState(now) {
     section_minutes_used: {},
     performance_by_section: {},
 
-    requirements_contract: null,
-    breadth_coverage: { components_mentioned: [], components_missing: [] },
-    response_pace: null,
-    pace_turns_tracked: 0,
-    verdict_trajectory: 'insufficient_data',
+    runtime_state: buildInitialRuntimeState(config),
+    candidate_progress: buildInitialCandidateProgress(config),
+    planner_state: null,
+    raw_planner_outputs: [],
 
     next_directive: null,
     interview_done: false,
@@ -103,11 +141,8 @@ export async function startInterviewSession(interview) {
   interview.template_id = INTERVIEW_CONFIG_ID;
   interview.template_version = 'v5';
   interview.selected_template_id = INTERVIEW_CONFIG_ID;
-  interview.session_state = buildInitialSessionState(now);
-  interview.target_duration_minutes =
-    typeof config.total_minutes === 'number'
-      ? config.total_minutes
-      : (config.sections || []).reduce((acc, s) => acc + (s.budget_minutes || 0), 0);
+  interview.session_state = buildInitialSessionState(now, config);
+  interview.target_duration_minutes = computeTargetDurationMinutes(config);
   interview.session_started_at = new Date(now);
   if (!Array.isArray(interview.conversation_turns)) interview.conversation_turns = [];
 
@@ -238,12 +273,13 @@ export function recordDebugTraceEntry(
           model: plannerTrace.model,
           input_prompt: plannerTrace.input_prompt,
           input_messages: plannerTrace.input_messages || null,
-          output_json: plannerTrace.output_json,
+          output_yaml: plannerTrace.output_yaml || '',
+          output_parsed: plannerTrace.output_parsed || null,
           duration_ms: plannerTrace.duration_ms,
           usage: plannerTrace.usage || null,
           error: plannerTrace.error || null,
           applied_directive: ss.next_directive || null,
-          recommended_section_focus_id: captured?.recommended_section_focus_id || '',
+          recommended_phase_focus_id: captured?.recommended_phase_focus_id || '',
         }
       : null,
   });

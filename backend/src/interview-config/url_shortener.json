@@ -1,257 +1,130 @@
 {
-  "interview_type": "system_design",
-  "target_level": "SR_SDE",
-  "total_minutes": 50,
-
-  "interviewer": {
-    "name": "Alex",
-    "title": "Staff Software Engineer",
-    "company": "Amazon",
-    "style_note": "rigorous, warm, fast on push-back; tends to ask follow-ups quietly rather than restating"
-  },
-
-  "problem": {
-    "title": "Design a URL Shortener",
-    "brief": "Design a URL shortener like bit.ly. Users submit long URLs and get back a short slug; anyone who visits that slug later gets redirected to the original URL.",
-    "opening_prompt": "Here's the problem: design a URL shortener like bit.ly. Users submit long URLs and get back a short slug; anyone who visits that slug later gets redirected to the original URL. Take it from there."
-  },
-
-  "scale_facts": [
-    { "label": "Write rate at peak",     "value": "~5,000 new links/sec",             "share_only_if_asked": true },
-    { "label": "Redirect read rate",     "value": "~500,000 redirects/sec globally",  "share_only_if_asked": true },
-    { "label": "Read:write ratio",       "value": "~100:1",                           "share_only_if_asked": true },
-    { "label": "New links per day",      "value": "~100 million",                     "share_only_if_asked": true },
-    { "label": "Metadata per link",      "value": "~200 bytes",                       "share_only_if_asked": true }
-  ],
-
-  "scope": {
-    "in_scope": [
-      "Custom slugs — first-write-wins on collision",
-      "Aggregate per-link click counts",
-      "Optional per-link TTL / expiry"
-    ],
-    "out_of_scope": [
-      "User accounts and authentication",
-      "Per-user analytics"
-    ]
-  },
-
-  "required_breadth_components": [
-    "write_api",
-    "redirect_service",
-    "slug_storage",
-    "caching_layer",
-    "id_generation",
-    "analytics_counter",
-    "ttl_expiry_handling"
-  ],
-
-  "sections": [
-    {
-      "id": "requirements",
-      "label": "Requirements Clarification",
-      "budget_minutes": 7,
-      "goal": "Lock a requirements contract with functional requirements, NFRs, and explicit in/out scope",
-      "objectives": "Explicit in/out scope list; at least one NFR (latency, availability, or consistency) agreed; read/write ratio discussed",
-      "good_signals": [
-        "Asks clarifying questions before proposing architecture",
-        "Identifies p99 redirect latency as the dominant SLO unprompted",
-        "Raises read/write asymmetry as a structural constraint",
-        "Proposes scale estimates before touching design"
-      ],
-      "weak_signals": [
-        "Jumps to architecture without requirements",
-        "Lists only functional requirements, no NFRs",
-        "Does not ask about scale at all"
-      ],
-      "faang_bar": "Senior IC drives the requirements themselves. Quantifies redirect QPS. Names cold-link long-tail as a constraint. Ties every NFR to an architectural implication before drawing anything.",
-      "exit_gate": {
-        "require_any": ["nfr_awareness", "estimation", "read_write_ratio"],
-        "description": "At least one quantitative or non-functional signal before leaving requirements. Contract must be locked."
-      },
-      "signals": [
-        { "id": "scope_driven",       "description": "Drove scope clarification themselves" },
-        { "id": "nfr_awareness",      "description": "Named latency, availability, consistency, or durability needs" },
-        { "id": "estimation",         "description": "Quantified scale before designing" },
-        { "id": "read_write_ratio",   "description": "Named read/write asymmetry as a constraint" },
-        { "id": "no_self_direction",  "description": "RED: Could not propose requirements without prompting" },
-        { "id": "premature_arch",     "description": "RED: Started designing before requirements were agreed" }
-      ],
-      "leveling": {
-        "one_down": {
-          "label": "SDE-2 / Mid (L4)",
-          "description": "Bounds scope with in/out list when prompted. Names 1-2 NFRs. Asks about scale when asked."
-        },
-        "target": {
-          "label": "Senior SDE (L5)",
-          "description": "Drives requirements list themselves. Quantifies redirect QPS at hundreds of thousands per second. Names cold-link long-tail. Ties NFRs to architecture."
-        },
-        "one_up": {
-          "label": "Principal / Staff (L6)",
-          "description": "Surfaces abuse risk and link rotation policy unprompted. Frames SLO in cost-per-redirect. Names explicit out-of-scope with rationale."
-        }
-      }
+  "interview_config": {
+    "role_and_level": {
+      "target_level": "Senior SDE (L5)"
     },
-    {
-      "id": "high_level_design",
-      "label": "High Level Design",
-      "budget_minutes": 15,
-      "goal": "End-to-end design covering all required breadth components from the requirements contract",
-      "objectives": "Write API and redirect service separated; caching layer on read path; storage choice justified; analytics counter designed; TTL handling addressed",
-      "good_signals": [
-        "Separates write API from redirect service",
-        "Places cache in front of DB on redirect path",
-        "Justifies storage choice against read/write ratio",
-        "Considers CDN or edge caching for redirect path",
-        "Designs analytics counter separately from redirect path"
-      ],
-      "weak_signals": [
-        "Monolithic service for reads and writes",
-        "No caching on redirect path",
-        "Storage choice stated without justification",
-        "Analytics blocking the redirect path"
-      ],
-      "faang_bar": "Candidate covers all required breadth components. Justifies storage choice. Separates concerns between write and redirect. Explains caching strategy with TTL reasoning tied to link expiry.",
-      "exit_gate": {
-        "require_any": ["read_write_separation", "caching_placement", "storage_justification"],
-        "description": "At least one substantive HLD signal collected. All required_breadth_components addressed at minimum."
-      },
-      "signals": [
-        { "id": "read_write_separation",  "description": "Separate services or paths for write vs redirect" },
-        { "id": "caching_placement",      "description": "Cache correctly positioned on redirect hot path" },
-        { "id": "storage_justification",  "description": "Storage choice justified against workload" },
-        { "id": "async_analytics",        "description": "Analytics counter decoupled from redirect path" },
-        { "id": "ttl_design",             "description": "TTL/expiry handled in the design" }
-      ],
-      "leveling": {
-        "one_down": {
-          "label": "SDE-2 / Mid (L4)",
-          "description": "Draws write API and redirect service separately. Names a cache. Picks storage but doesn't deeply justify."
-        },
-        "target": {
-          "label": "Senior SDE (L5)",
-          "description": "Covers all breadth components. Justifies storage against read/write ratio. Designs cache with TTL reasoning. Decouples analytics from critical path."
-        },
-        "one_up": {
-          "label": "Principal / Staff (L6)",
-          "description": "Reasons about CDN edge caching unprompted. Identifies cold-start problem for new links. Async write path for click counting. Thinks about geo-distribution."
-        }
-      }
+    "problem": {
+      "title": "Design TinyURL",
+      "opening_prompt": "Design a URL shortening service like TinyURL. Users submit long URLs and get short links back. Take it from there."
     },
-    {
-      "id": "deep_dive",
-      "label": "Deep Dive",
-      "budget_minutes": 14,
-      "goal": "Depth on the topics that make this problem interesting: ID generation and the redirect critical path",
-      "objectives": "ID generation strategy named with collision handling; redirect path latency characterized end-to-end; horizontal scaling approach for ID generation",
-      "deep_dive_topics": [
+    "interview_structure": {
+      "phases": [
         {
-          "id": "id_generation",
-          "label": "ID / Slug Generation",
-          "description": "How are short slugs generated? How are collisions handled? Does the strategy scale horizontally without coordination?",
-          "what_good_looks_like": "Concrete strategy (not just 'hash the URL'). Explicit collision handling. Horizontally scalable without a global coordination bottleneck. Custom slug collision handled with first-write-wins semantics."
+          "id": "requirements",
+          "name": "Phase 1: Requirements",
+          "budget_min": 5,
+          "exit_gate": "Candidate defines system boundaries and traffic targets.",
+          "topics": [
+            {
+              "id": "functional_scope",
+              "name": "System Boundaries",
+              "subtopics": [
+                { "id": "in_scope_features", "description": "Core features like custom slugs and click tracking." },
+                { "id": "out_of_scope_features", "description": "Exclusions like user auth or frontend UI." }
+              ]
+            },
+            {
+              "id": "scale_and_nfrs",
+              "name": "Traffic and Targets",
+              "subtopics": [
+                { "id": "read_write_asymmetry", "description": "Identifying the massive read-heavy ratio (100:1)." },
+                { "id": "latency_and_availability", "description": "Setting explicit p99 latency and availability targets." }
+              ]
+            }
+          ]
         },
         {
-          "id": "redirect_critical_path",
-          "label": "Redirect Critical Path",
-          "description": "What happens end-to-end when a user visits a short URL? Where is latency introduced at each hop?",
-          "what_good_looks_like": "Traced hop-by-hop with latency estimates at each step. Cache hit vs miss paths distinguished. p99 characterized."
+          "id": "high_level_design",
+          "name": "Phase 2: High Level Design",
+          "budget_min": 15,
+          "exit_gate": "All core system components are laid out and connected.",
+          "topics": [
+            {
+              "id": "api_and_routing",
+              "name": "API & Routing",
+              "subtopics": [
+                { "id": "write_vs_read_api", "description": "Separation of link creation vs redirection." },
+                { "id": "http_301_vs_302", "description": "Tradeoffs between HTTP status codes regarding caching and analytics." }
+              ]
+            },
+            {
+              "id": "storage_layer",
+              "name": "Storage Strategy",
+              "subtopics": [
+                { "id": "database_selection", "description": "Choosing a DB optimized for heavy reads and key-value lookups." },
+                { "id": "schema_design", "description": "Data model for storing short-to-long URL mappings and metadata." }
+              ]
+            },
+            {
+              "id": "caching_layer",
+              "name": "Caching Strategy",
+              "subtopics": [
+                { "id": "cache_placement", "description": "Where the cache sits in the architecture." },
+                { "id": "eviction_and_ttl", "description": "Cache lifecycle management." }
+              ]
+            }
+          ]
         },
         {
-          "id": "horizontal_scaling",
-          "label": "Scaling the Read Tier",
-          "description": "How does the redirect service scale to 500k/sec? What are the bottlenecks?",
-          "what_good_looks_like": "Cache hit rate reasoning. DB read replica or KV store justification. CDN placement. Identifies where the first bottleneck is."
+          "id": "deep_dive",
+          "name": "Phase 3: Deep Dive",
+          "budget_min": 15,
+          "exit_gate": "Candidate successfully solves the system's primary bottlenecks.",
+          "topics": [
+            {
+              "id": "id_generation_at_scale",
+              "name": "ID Generation & Collisions",
+              "subtopics": [
+                { "id": "collision_probability", "description": "Math behind hash collisions (MD5 vs Base62)." },
+                { "id": "distributed_generation", "description": "Pre-generating IDs at scale without DB lock bottlenecks (e.g., Key Generation Service)." }
+              ]
+            },
+            {
+              "id": "data_partitioning",
+              "name": "Sharding & Scaling Storage",
+              "subtopics": [
+                { "id": "partitioning_strategy", "description": "How data is sharded (hash vs range) and rebalanced under load." }
+              ]
+            },
+            {
+              "id": "cache_miss_storms",
+              "name": "Thundering Herd Mitigation",
+              "subtopics": [
+                { "id": "celebrity_link_problem", "description": "Handling sudden, massive traffic spikes on un-cached viral links." }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "scale_and_operations",
+          "name": "Phase 4: Scale and Operations",
+          "budget_min": 10,
+          "exit_gate": "Candidate proves the system survives failures and abuse.",
+          "topics": [
+            {
+              "id": "system_resiliency",
+              "name": "Failure Modes",
+              "subtopics": [
+                { "id": "database_failover", "description": "Behavior when the primary database cluster goes down." }
+              ]
+            },
+            {
+              "id": "abuse_prevention",
+              "name": "Security and Limits",
+              "subtopics": [
+                { "id": "namespace_exhaustion", "description": "Handling malicious scripts trying to consume all possible short slugs." }
+              ]
+            },
+            {
+              "id": "observability",
+              "name": "Monitoring & Metrics",
+              "subtopics": [
+                { "id": "critical_slis", "description": "Key metrics to trigger alerts (e.g., cache hit rate, redirect latency)." }
+              ]
+            }
+          ]
         }
-      ],
-      "exit_gate": {
-        "require_any": ["id_strategy", "redirect_latency", "horizontal_scaling"],
-        "description": "At least one deep dive topic explored with depth."
-      },
-      "signals": [
-        { "id": "id_strategy",          "description": "Concrete ID generation approach with reasoning" },
-        { "id": "collision_handling",   "description": "Custom slug collision handled explicitly" },
-        { "id": "redirect_latency",     "description": "Redirect path traced end-to-end with latency" },
-        { "id": "horizontal_scaling",   "description": "Read tier scales without coordination bottleneck" }
-      ],
-      "leveling": {
-        "one_down": {
-          "label": "SDE-2 / Mid (L4)",
-          "description": "Names an ID generation approach. Addresses collision at a high level. Describes redirect path at component level."
-        },
-        "target": {
-          "label": "Senior SDE (L5)",
-          "description": "Horizontally scalable ID allocator with collision probability reasoning. Custom slug first-write-wins semantics. Redirect path traced with per-hop latency estimates."
-        },
-        "one_up": {
-          "label": "Principal / Staff (L6)",
-          "description": "Birthday paradox implications for slug collision. ID strategy without global coordination. Long-tail cold-link problem and its impact on cache hit rate."
-        }
-      }
-    },
-    {
-      "id": "operations",
-      "label": "Reliability & Operations",
-      "budget_minutes": 8,
-      "goal": "Define the redirect SLO, how it's monitored, and what happens when dependencies fail",
-      "objectives": "Concrete SLO metric named; monitoring signal described; failure behavior and fallback articulated",
-      "good_signals": [
-        "Names a specific SLO metric (p99 redirect latency, availability %)",
-        "Proposes a concrete monitoring signal, not just 'use metrics'",
-        "Describes failure behavior and fallback explicitly"
-      ],
-      "weak_signals": [
-        "Vague on monitoring ('we'd add some dashboards')",
-        "No SLO defined",
-        "No failure or degraded-mode reasoning"
-      ],
-      "faang_bar": "Candidate defines a concrete redirect SLO, names the specific signal they'd alert on, and describes degraded-mode behavior when a dependency fails.",
-      "exit_gate": {
-        "require_any": ["slo_defined", "alert_signal", "failure_mode"],
-        "description": "At least one operations signal collected."
-      },
-      "signals": [
-        { "id": "slo_defined",    "description": "Specific SLO metric named (p99, availability %)" },
-        { "id": "alert_signal",   "description": "Concrete alerting signal, not vague 'monitoring'" },
-        { "id": "failure_mode",   "description": "Failure behavior and fallback explicitly described" }
-      ],
-      "leveling": {
-        "one_down": {
-          "label": "SDE-2 / Mid (L4)",
-          "description": "Names an SLO. Mentions monitoring. Describes basic failure behavior."
-        },
-        "target": {
-          "label": "Senior SDE (L5)",
-          "description": "Concrete redirect SLO tied to p99 latency target. Specific alert signal and threshold. Degraded-mode behavior when cache or DB fails, with explicit fallback."
-        },
-        "one_up": {
-          "label": "Principal / Staff (L6)",
-          "description": "Connects SLO to business impact. Error budget and burn rate alerting. On-call runbook structure. Capacity planning and traffic forecasting as part of operations."
-        }
-      }
+      ]
     }
-  ],
-
-  "fault_scenarios": [
-    "Your primary database just went down mid-traffic spike. Walk me through what happens end-to-end.",
-    "Cache miss rate just spiked to 80%. What degrades first in what you've described?",
-    "A user reports their short link is redirecting to the wrong URL. How do you debug that in production?",
-    "Your slug generation is returning collisions at 10x the expected rate. What's happening and how do you recover?",
-    "A high-profile link is being used for a phishing campaign. What does your system do, and how fast?"
-  ],
-
-  "raise_stakes_prompts": [
-    "How would you explain the cost model for this system to your VP — specifically the cost per redirect?",
-    "You're now supporting this service in 5 geographic regions. What breaks first in your current design?",
-    "Three other product teams are building features on your API. How does that change your design decisions?",
-    "Your slug namespace is at 80% capacity. How do you handle that operationally?",
-    "You need 99.999% availability on the redirect path. What does that mean architecturally and operationally?"
-  ],
-
-  "variant_scenarios": [
-    "Now assume 90% of your traffic is automated bots, not human clicks. How does your design change?",
-    "New requirement: links must be editable after creation. What breaks in your current design?",
-    "Your service is now the infrastructure for a public URL shortener API — third parties are generating links. What changes?",
-    "You need to support link previews — before redirecting, show the destination and a safety warning. How does that affect your architecture?"
-  ]
+  }
 }

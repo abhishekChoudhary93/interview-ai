@@ -3,7 +3,7 @@ import { config } from '../config.js';
 function stripJsonFence(text) {
   let s = String(text).trim();
   if (s.startsWith('```')) {
-    s = s.replace(/^```(?:json)?\s*/i, '');
+    s = s.replace(/^```(?:json|yaml|yml)?\s*/i, '');
     s = s.replace(/\s*```$/i, '');
   }
   return s.trim();
@@ -63,6 +63,15 @@ function applyProviderPin(body) {
       allow_fallbacks: false,
     };
   }
+}
+
+function applyPromptCaching(body) {
+  if (!config.openRouterPromptCachingEnabled) return;
+  const cacheControl = { type: 'ephemeral' };
+  if (config.openRouterPromptCachingTtl) {
+    cacheControl.ttl = config.openRouterPromptCachingTtl;
+  }
+  body.cache_control = cacheControl;
 }
 
 function debugTraceEnabled() {
@@ -129,6 +138,7 @@ export async function invokeOpenRouterLLM({
   if (typeof max_tokens === 'number') body.max_tokens = max_tokens;
   if (schema?.properties) body.response_format = { type: 'json_object' };
   applyProviderPin(body);
+  applyPromptCaching(body);
 
   const res = await fetch(`${config.openRouterBaseUrl}/chat/completions`, {
     method: 'POST',
@@ -219,6 +229,7 @@ export async function* streamOpenRouterLLM({
   if (typeof top_p === 'number') body.top_p = top_p;
   if (typeof max_tokens === 'number') body.max_tokens = max_tokens;
   applyProviderPin(body);
+  applyPromptCaching(body);
 
   const res = await fetch(`${config.openRouterBaseUrl}/chat/completions`, {
     method: 'POST',

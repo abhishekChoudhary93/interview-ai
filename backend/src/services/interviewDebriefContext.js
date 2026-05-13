@@ -47,7 +47,8 @@ export function buildSectionCoverageForDebrief(state, configOrPlan) {
     const evalHistory = Array.isArray(state.eval_history) ? state.eval_history : [];
     const everTouched = new Set();
     for (const e of evalHistory) {
-      if (e?.recommended_section_focus_id) everTouched.add(e.recommended_section_focus_id);
+      const focusId = e?.recommended_phase_focus_id || e?.recommended_section_focus_id;
+      if (focusId) everTouched.add(focusId);
     }
     return sections.map((s) => {
       const id = s.id;

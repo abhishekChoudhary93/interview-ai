@@ -174,7 +174,8 @@ function buildPerSectionEvidenceBlock(config, sessionState) {
 
   const everTouched = new Set();
   for (const e of evalHistory) {
-    if (e?.recommended_section_focus_id) everTouched.add(e.recommended_section_focus_id);
+    const focusId = e?.recommended_phase_focus_id || e?.recommended_section_focus_id;
+    if (focusId) everTouched.add(focusId);
   }
 
   const lines = [];
@@ -255,7 +256,7 @@ function buildMomentumTrajectoryBlock(sessionState) {
   if (evalHistory.length === 0) return '(no eval history captured)';
   const compact = evalHistory.map((e) => {
     const t = e?.turn_index ?? '?';
-    const sec = e?.recommended_section_focus_id || '?';
+    const sec = e?.recommended_phase_focus_id || e?.recommended_section_focus_id || '?';
     const perf = e?.performance_assessment || 'unclear';
     const mov = e?.move || '?';
     const dif = e?.difficulty || 'L?';
@@ -287,7 +288,8 @@ export function buildV5DebriefPrompt(config, sessionState, interview) {
   const evalHistory = Array.isArray(sessionState?.eval_history) ? sessionState.eval_history : [];
   const everTouched = new Set();
   for (const e of evalHistory) {
-    if (e?.recommended_section_focus_id) everTouched.add(e.recommended_section_focus_id);
+    const focusId = e?.recommended_phase_focus_id || e?.recommended_section_focus_id;
+    if (focusId) everTouched.add(focusId);
   }
   const sectionsWithEvidence = sections.filter((s) => {
     const f = Array.isArray(flagsBySection[s.id]) ? flagsBySection[s.id] : [];
@@ -611,7 +613,8 @@ async function generateV5StructuredDebrief(interview) {
   const evalHistory = Array.isArray(ls?.eval_history) ? ls.eval_history : [];
   const everTouched = new Set();
   for (const e of evalHistory) {
-    if (e?.recommended_section_focus_id) everTouched.add(e.recommended_section_focus_id);
+    const focusId = e?.recommended_phase_focus_id || e?.recommended_section_focus_id;
+    if (focusId) everTouched.add(focusId);
   }
   const sectionCoverageMap = sections.map((s) => {
     const id = s.id;

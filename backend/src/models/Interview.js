@@ -99,21 +99,18 @@ const interviewSchema = new mongoose.Schema(
      *      turn_count,                    // interviewer turn counter (safety cap)
      *      session_wall_start_ms,         // ms timestamp of session start
      *      last_turn_ts,                  // ms timestamp of previous turn (per-section delta)
-     *      eval_history: [{
-     *        turn_index, move, difficulty, momentum, bar_trajectory, time_status,
-     *        recommended_section_focus_id, performance_assessment, candidate_signal,
-     *        consumed_probe_id, probe_observations_added, flags_added_count,
-     *        leak_guard_triggered, reply_leak_triggered, validator_flags,
-     *        interview_elapsed_fraction, interview_done, notes, at
-     *      }],
-     *      probe_queue: { [section_id]: [{id, observation, probe, difficulty, added_at_turn, consumed, consumed_at_turn}] },
-     *      flags_by_section: { [section_id]: [{type:'green'|'red', signal_id, note, at_turn}] },
-     *      section_minutes_used: { [section_id]: number },
-     *      performance_by_section: { [section_id]: 'above_target'|'at_target'|'below_target' },
+ *      eval_history: [{ turn_index, move, focus, section, trajectory, confidence, elapsed_min, remaining_min, should_transition_soon, interview_done, at }],
+ *      raw_planner_outputs: [{ turn_index, at, output_json }],
+ *      planner_state: {
+ *        conversation_hierarchy, coverage_tracking, candidate_state,
+ *        signals_collected, time_management, reasoning_trace
+ *        // conversation_hierarchy.topic: { all_possible_topics_for_question, current, turns_on_topic, topic_progress }
+ *        // conversation_hierarchy.subtopic: { all_possible_sub_topics_for_question, current, turns_on_subtopic, subtopic_signal }
+ *      },
      *      next_directive: {
-     *        move, difficulty, recommended_focus, recommended_section_focus_id,
-     *        consumed_probe_id, momentum, bar_trajectory, time_status, answer_only,
-     *        generated_after_turn
+ *        move, focus, recommended_focus, recommended_section_focus_id,
+ *        conversation_hierarchy, coverage_tracking, candidate_state,
+ *        signals_collected, time_management, reasoning_trace, generated_after_turn
      *      },
      *      interview_done,
      *      // Local-only debug trace, populated when INTERVIEW_DEBUG_TRACE=1:

@@ -352,6 +352,10 @@ function formatDirective(sessionState) {
   }
 
   const move = String(d.move || '').toUpperCase();
+  const canonicalMove = move === 'LISTEN' ? 'LET_LEAD' : move;
+  const focus = typeof d.focus === 'string' && d.focus.trim()
+    ? d.focus
+    : (d.recommended_focus || '');
   return [
     `# Directive (OBEY STRICTLY)
     The Move and Focus below override all prior context. If your output does not anchor exactly to the Focus, you fail the turn. The Planner gives you the next question on the next turn.
@@ -359,8 +363,8 @@ function formatDirective(sessionState) {
     - Move=ANSWER_AND_RELEASE: State the fact in the Focus, then STOP. No follow-ups, no transition phrases. The Planner gives you the next question on the next turn.
     - Any other Move: Render the Focus naturally in 1-3 sentences.
     `,
-    `Move:        ${move}`,
-    `Focus:       "${d.recommended_focus || ''}"`,
+    `Move:        ${canonicalMove}`,
+    `Focus:       "${focus}"`,
   ] .join('\n');
 }
 
@@ -402,7 +406,7 @@ function shouldIncludeContractClosingBlock(sessionState) {
   if (!d) return false;
   const move = String(d.move || '').toUpperCase();
   if (move !== 'HAND_OFF') return false;
-  const focus = String(d.recommended_section_focus_id || '').toLowerCase();
+  const focus = String(d.recommended_phase_focus_id || d.recommended_section_focus_id || '').toLowerCase();
   return focus !== '' && focus !== 'requirements';
 }
 

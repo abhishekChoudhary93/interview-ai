@@ -31,6 +31,7 @@ function parseAppEnv() {
 }
 
 function parseOrigins(value) {
+  if (typeof value !== 'string') return [];
   return value
     .split(',')
     .map((s) => s.trim())
@@ -121,13 +122,28 @@ export const config = {
   openRouterExtractionModel: envString('OPENROUTER_EXTRACTION_MODEL', ''),
   /**
    * Pin OpenRouter provider routing for ALL tiers. Comma-separated provider
-   * names in priority order (e.g. "DeepSeek"). When set, requests use
+   * names in priority order. When set, requests use
    * provider.order = [...] with allow_fallbacks=false. Required for DeepSeek
    * context caching, since only DeepSeek's official infra supports it — any
    * fallback to Fireworks / Together / Novita / DeepInfra disables caching.
    * Leave empty to let OpenRouter auto-route.
    */
-  openRouterProviders: parseOrigins(envString('OPENROUTER_PROVIDERS', '')),
+  openRouterProviders: parseOrigins(
+    envString(
+      'OPENROUTER_PROVIDERS'
+    )
+  ),
+  /**
+   * Top-level OpenRouter cache_control hint.
+   * Defaults OFF to avoid constraining provider routing for non-supporting providers.
+   * Enable with OPENROUTER_PROMPT_CACHING_ENABLED=true.
+   */
+  openRouterPromptCachingEnabled: envBool('OPENROUTER_PROMPT_CACHING_ENABLED', false),
+  /**
+   * Cache TTL for providers that support top-level cache_control (e.g. Anthropic).
+   * Allowed values are provider-dependent; common values: "5m" (default) and "1h".
+   */
+  openRouterPromptCachingTtl: envString('OPENROUTER_PROMPT_CACHING_TTL', '').trim(),
   /** When true or a hop count, Express trusts X-Forwarded-* from proxies (see README). */
   trustProxy: parseTrustProxy(),
   /** ISO country unknown → use this market (US | EU | IN | ROW). */

@@ -88,14 +88,19 @@ export async function* streamInterviewerReply({
  * format so unit tests and offline dev sessions still work.
  */
 function deterministicOpening(config) {
+  const root = config?.interview_config || config || {};
+  const phases = Array.isArray(root?.interview_structure?.phases) ? root.interview_structure.phases : [];
   const interviewer = config?.interviewer || {
     name: 'Alex',
     title: 'Staff Software Engineer',
     company: 'a top-tier tech company',
   };
-  const totalMin = Number(config?.total_minutes) ||
-    (Array.isArray(config?.sections)
-      ? config.sections.reduce((acc, s) => acc + (Number(s.budget_minutes) || 0), 0)
+  const totalMin = Number(root?.total_minutes) ||
+    Number(root?.time_budget?.total_min) ||
+    (phases.length
+      ? phases.reduce((acc, s) => acc + (Number(s.budget_min) || 0), 0)
+      : Array.isArray(root?.sections)
+      ? root.sections.reduce((acc, s) => acc + (Number(s.budget_minutes) || 0), 0)
       : 0);
   const minutesClause = totalMin > 0
     ? `We've got ${totalMin} minutes today`
@@ -113,15 +118,20 @@ function deterministicOpening(config) {
  * messages back-to-back.
  */
 function buildOpeningSystemPrompt(config) {
+  const root = config?.interview_config || config || {};
+  const phases = Array.isArray(root?.interview_structure?.phases) ? root.interview_structure.phases : [];
   const interviewer = config?.interviewer || {
     name: 'Alex',
     title: 'Staff Software Engineer',
     company: 'a top-tier tech company',
     style_note: '',
   };
-  const totalMin = Number(config?.total_minutes) ||
-    (Array.isArray(config?.sections)
-      ? config.sections.reduce((acc, s) => acc + (Number(s.budget_minutes) || 0), 0)
+  const totalMin = Number(root?.total_minutes) ||
+    Number(root?.time_budget?.total_min) ||
+    (phases.length
+      ? phases.reduce((acc, s) => acc + (Number(s.budget_min) || 0), 0)
+      : Array.isArray(root?.sections)
+      ? root.sections.reduce((acc, s) => acc + (Number(s.budget_minutes) || 0), 0)
       : 0);
   const handoff = buildProblemHandoff(config);
   const styleClause = interviewer.style_note

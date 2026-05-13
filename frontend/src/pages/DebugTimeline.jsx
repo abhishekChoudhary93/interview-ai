@@ -22,7 +22,7 @@ import { getInterviewDebugTrace } from "@/api/interviews";
  *     - Executor system prompt
  *     - Executor history
  *     - Planner input prompt
- *     - Planner output JSON
+ *     - Planner output YAML
  *     - Applied directive
  *
  * Each turn has a "Copy as markdown" button that emits a pasteable summary,
@@ -190,11 +190,11 @@ function TripwireChips({ evalRow }) {
 function DecisionRow({ entry, evalRow }) {
   const planner = entry.planner;
   const directive = planner?.applied_directive;
-  const json = planner?.output_json || {};
+  const parsedPlanner = planner?.output_parsed || planner?.output_json || {};
 
-  const signal = evalRow?.candidate_signal || json.candidate_signal || "—";
+  const signal = evalRow?.candidate_signal || parsedPlanner.candidate_signal || "—";
   const derivedMove = evalRow?.derived_move || directive?.recommended_move || "—";
-  const plannerMove = evalRow?.planner_recommended_move || json.recommended_move || derivedMove;
+  const plannerMove = evalRow?.planner_recommended_move || parsedPlanner.recommended_move || derivedMove;
   const moveDiffers = derivedMove !== plannerMove && plannerMove && plannerMove !== "—";
   const probe = evalRow?.derived_probe || directive?.recommended_probe_level || "—";
   const perf = evalRow?.performance_assessment || directive?.performance_assessment || "unclear";
@@ -260,13 +260,13 @@ function DecisionRow({ entry, evalRow }) {
 function turnAsMarkdown(entry, evalRow, index) {
   const planner = entry.planner;
   const directive = planner?.applied_directive;
-  const json = planner?.output_json || {};
+  const parsedPlanner = planner?.output_parsed || planner?.output_json || {};
   const turnIdx = entry.turn_index ?? index + 1;
   const ts = entry.ts ? new Date(entry.ts).toISOString() : "";
 
-  const signal = evalRow?.candidate_signal || json.candidate_signal || "—";
+  const signal = evalRow?.candidate_signal || parsedPlanner.candidate_signal || "—";
   const derivedMove = evalRow?.derived_move || directive?.recommended_move || "—";
-  const plannerMove = evalRow?.planner_recommended_move || json.recommended_move || derivedMove;
+  const plannerMove = evalRow?.planner_recommended_move || parsedPlanner.recommended_move || derivedMove;
   const probe = evalRow?.derived_probe || directive?.recommended_probe_level || "—";
   const perf = evalRow?.performance_assessment || directive?.performance_assessment || "unclear";
   const progress = evalRow?.section_progress || planner?.section_progress_decision || "—";
@@ -419,8 +419,11 @@ function TurnCard({ entry, evalRow, index }) {
               <Section title={`Planner input (${planner.model || "?"})`}>
                 <Pre>{planner.input_prompt || "(empty)"}</Pre>
               </Section>
-              <Section title="Planner output JSON">
-                <Pre>{JSON.stringify(planner.output_json, null, 2)}</Pre>
+              <Section title="Planner output YAML">
+                <Pre>{planner.output_yaml || "(empty)"}</Pre>
+              </Section>
+              <Section title="Planner output parsed">
+                <Pre>{JSON.stringify(planner.output_parsed || planner.output_json || null, null, 2)}</Pre>
               </Section>
               <Section title="Applied directive (input to NEXT executor turn)" accent>
                 <DirectiveCard directive={directive} />

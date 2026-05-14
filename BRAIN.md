@@ -623,4 +623,4 @@ The JS substrate's job is: load config, route flags / probes by `section_id`, ac
 - Voice / canvas / SSE transports — wire format unchanged; only payload field names changed (`requirements_contract`, `breadth_coverage`, `response_pace`, `verdict_trajectory` are additive on `session_state`).
 - UI persona switching — would require `config.interviewer` to be overridable per-row.
 - LLM-paste detection on candidate replies — see [BACKLOG.md](BACKLOG.md).
-- Substrate backstops for thread-depth / exit-gate / scale-fact / stuck-never-CLOSE — v5 keeps only the 45-min CLOSE floor in JS. The other discipline rules are prompt-only. If telemetry shows Planner drift, reintroduce them as v5 backstops.
+- Substrate backstops for thread-depth / exit-gate / scale-fact / stuck-never-CLOSE — v5 keeps only the 45-min CLOSE floor in JS. The other discipline rules are prompt-only. If telemetry shows Planner drift, reintroduce them as v5 backstops..

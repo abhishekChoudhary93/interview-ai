@@ -10,6 +10,7 @@ import publicRoutes from './routes/public.js';
 import { cookieParseMiddleware } from './middleware/cookieParse.js';
 import { loadInterviewConfig, INTERVIEW_CONFIG_ID } from './services/interviewConfig.js';
 import { resolveOpenRouterModel } from './config.js';
+import { logEmailStartupBanner } from './services/email/emailClient.js';
 
 const app = express();
 app.set('trust proxy', config.trustProxy);
@@ -55,6 +56,7 @@ function logLlmStartupBanner() {
 async function main() {
   assertConfigValid();
   logLlmStartupBanner();
+  logEmailStartupBanner();
   // v3 single-problem engine: load and validate the one interview config
   // at startup so a bad JSON aborts boot loudly.
   const cfg = loadInterviewConfig();

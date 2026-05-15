@@ -9,6 +9,13 @@ export const AuthProvider = ({ children }) => {
   const [isLoadingAuth, setIsLoadingAuth] = useState(true);
   const [authChecked, setAuthChecked] = useState(false);
 
+  const setSession = (me) => {
+    setUser(me);
+    setIsAuthenticated(true);
+    setAuthChecked(true);
+    return me;
+  };
+
   const refreshUser = useCallback(async () => {
     setIsLoadingAuth(true);
     try {
@@ -31,18 +38,25 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const me = await authApi.login({ email, password });
-    setUser(me);
-    setIsAuthenticated(true);
-    setAuthChecked(true);
-    return me;
+    return setSession(me);
   };
 
-  const register = async (email, password, fullName) => {
-    const me = await authApi.register({ email, password, fullName });
-    setUser(me);
-    setIsAuthenticated(true);
-    setAuthChecked(true);
-    return me;
+  const registerRequest = async (email, password, fullName) => {
+    return authApi.registerRequest({ email, password, fullName });
+  };
+
+  const completeRegistration = async (email, code) => {
+    const me = await authApi.registerVerify({ email, code });
+    return setSession(me);
+  };
+
+  const sendLoginOtp = async (email) => {
+    return authApi.sendLoginOtp({ email });
+  };
+
+  const verifyLoginOtp = async (email, code) => {
+    const me = await authApi.verifyLoginOtp({ email, code });
+    return setSession(me);
   };
 
   const logout = async () => {
@@ -60,7 +74,10 @@ export const AuthProvider = ({ children }) => {
         isLoadingAuth,
         authChecked,
         login,
-        register,
+        registerRequest,
+        completeRegistration,
+        sendLoginOtp,
+        verifyLoginOtp,
         logout,
         refreshUser,
       }}

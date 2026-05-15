@@ -7,7 +7,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "seed": "node src/seed/seedCli.js",
-    "test": "node --test src/services/resolveMarket.test.js src/services/interviewSystemPrompt.test.js src/services/interviewEvalCapture.test.js src/services/interviewConverse.test.js"
+    "test": "node --test src/services/resolveMarket.test.js src/services/interviewSystemPrompt.test.js src/services/interviewEvalCapture.test.js src/services/interviewConverse.test.js src/services/otpService.test.js src/services/email/emailTemplates.test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -16,6 +16,7 @@
     "express": "^4.21.2",
     "js-yaml": "^4.1.1",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.9.5"
+    "mongoose": "^8.9.5",
+    "resend": "^4.5.1"
   }
 }

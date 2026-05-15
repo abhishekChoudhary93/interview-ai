@@ -12,6 +12,8 @@
     "start:prod": "docker compose --env-file .env.production -f docker-compose.prod.yml down --remove-orphans || true && docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d",
     "stop:prod": "docker compose --env-file .env.production -f docker-compose.prod.yml down",
     "logs": "docker compose --env-file .env.local -f docker-compose.yml logs -f",
+    "logs:backend": "docker compose --env-file .env.local -f docker-compose.yml logs -f backend",
+    "logs:email": "docker compose --env-file .env.local -f docker-compose.yml logs -f backend 2>&1 | grep --line-buffered '\\[email\\]'",
     "dev": "npm run dev -w frontend",
     "build": "npm run build -w frontend",
     "lint": "npm run lint -w frontend",

@@ -177,3 +177,8 @@ curl -s -H "X-Debug-Country: IN" http://localhost:3001/api/public/market-context
 | `OPENROUTER_OPENING_MODEL` | `openai/gpt-4o-mini` | — |
 | `TRUST_PROXY` | unset | `true`, `1`, or hop count |
 | `DEFAULT_MARKET_ID` | `ROW` | `US` / `EU` / `IN` / `ROW` |
+| `RESEND_API_KEY` | Optional (OTP logged to console if unset) | **Required** for sign-up / email-code sign-in |
+| `RESEND_FROM_EMAIL` | `InterviewAI <onboarding@resend.dev>` in [`.env.local`](.env.local) | Verified sender (e.g. `InterviewAI <auth@yourdomain.com>`). **Required** for OTP delivery |
+| `RESEND_OTP_TEMPLATE_ALIAS` | `inline` | `inline` (built-in html) or a published Resend template alias (`{{{otp}}}`) |
+| `OTP_EXPIRES_MINUTES` | `10` | OTP validity window |
+| `OTP_RESEND_COOLDOWN_SECONDS` | `60` | Minimum wait between OTP sends per email |

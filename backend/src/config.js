@@ -148,6 +148,13 @@ export const config = {
   trustProxy: parseTrustProxy(),
   /** ISO country unknown → use this market (US | EU | IN | ROW). */
   defaultMarketId: envString('DEFAULT_MARKET_ID', 'ROW').toUpperCase(),
+  resendApiKey: (process.env.RESEND_API_KEY || '').trim(),
+  resendOtpTemplateAlias: envString('RESEND_OTP_TEMPLATE_ALIAS', 'inline'),
+  /** Optional — only for future non-template emails, not OTP. */
+  resendFromEmail: (process.env.RESEND_FROM_EMAIL || '').trim(),
+  otpExpiresMinutes: Number(envString('OTP_EXPIRES_MINUTES', '10')) || 10,
+  otpResendCooldownSeconds: Number(envString('OTP_RESEND_COOLDOWN_SECONDS', '60')) || 60,
+  otpMaxAttempts: Number(envString('OTP_MAX_ATTEMPTS', '5')) || 5,
 };
 
 /**
@@ -199,5 +206,11 @@ export function assertConfigValid() {
     throw new Error(
       '[config] Production requires JWT_REFRESH_SECRET to be a strong secret (not a dev placeholder).'
     );
+  }
+  if (!config.resendApiKey) {
+    throw new Error('[config] Production requires RESEND_API_KEY to be set for OTP email delivery.');
+  }
+  if (!config.resendFromEmail) {
+    throw new Error('[config] Production requires RESEND_FROM_EMAIL for OTP email delivery.');
   }
 }

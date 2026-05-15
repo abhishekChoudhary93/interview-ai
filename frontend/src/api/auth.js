@@ -1,10 +1,18 @@
 import { apiRequest } from './httpClient.js';
 import { clearToken } from '@/lib/authToken.js';
 
-export async function register({ email, password, fullName }) {
-  const data = await apiRequest('/api/auth/register', {
+export async function registerRequest({ email, password, fullName }) {
+  return apiRequest('/api/auth/register/request', {
     method: 'POST',
     body: { email, password, fullName },
+    skipAuth: true,
+  });
+}
+
+export async function registerVerify({ email, code }) {
+  const data = await apiRequest('/api/auth/register/verify', {
+    method: 'POST',
+    body: { email, code },
     skipAuth: true,
   });
   return normalizeUser(data.user);
@@ -14,6 +22,23 @@ export async function login({ email, password }) {
   const data = await apiRequest('/api/auth/login', {
     method: 'POST',
     body: { email, password },
+    skipAuth: true,
+  });
+  return normalizeUser(data.user);
+}
+
+export async function sendLoginOtp({ email }) {
+  return apiRequest('/api/auth/otp/send', {
+    method: 'POST',
+    body: { email, purpose: 'login' },
+    skipAuth: true,
+  });
+}
+
+export async function verifyLoginOtp({ email, code }) {
+  const data = await apiRequest('/api/auth/otp/verify', {
+    method: 'POST',
+    body: { email, code, purpose: 'login' },
     skipAuth: true,
   });
   return normalizeUser(data.user);

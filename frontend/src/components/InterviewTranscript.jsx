@@ -12,6 +12,7 @@ export default function InterviewTranscript({
   title = "Conversation",
   subtitle = "Live transcript",
   autoScroll = true,
+  highlightedIndex = null,
 }) {
   const bottomRef = useRef(null);
 
@@ -40,8 +41,13 @@ export default function InterviewTranscript({
           ) : (
             messages.map((m, i) => (
               <div
+                id={`msg-${i}`}
                 key={`${i}-${m.role}-${String(m.content).slice(0, 24)}`}
-                className={`flex gap-2 ${m.role === "candidate" ? "flex-row-reverse" : ""}`}
+                className={cn(
+                  "flex gap-2 p-2 rounded-xl transition-all duration-500",
+                  m.role === "candidate" ? "flex-row-reverse" : "",
+                  highlightedIndex === i ? "bg-accent/25 scale-[1.01] ring-2 ring-accent/50 shadow-lg shadow-accent/5 border border-accent/30" : "border border-transparent"
+                )}
               >
                 <div
                   className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${

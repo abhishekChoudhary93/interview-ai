@@ -39,6 +39,8 @@ services:
       DEFAULT_MARKET_ID: ${DEFAULT_MARKET_ID:-IN}
     depends_on:
       - mongo
+    volumes:
+      - ./backend/src:/app/src
 
   frontend:
     build:

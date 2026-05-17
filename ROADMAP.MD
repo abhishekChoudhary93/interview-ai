@@ -66,3 +66,17 @@ Here is the complete, exhaustive list of work items required to build, secure, a
 ---
 
 Which bucket do you want to tackle first to get the momentum going?
+
+
+Required Fixes 
+1. The chat box in the chat should be bigger since and should contain atleast few lines - it's just one line and doesn't make sense for larger converstaions.
+2. We should not let someone create more than interviews which are available to them basis their plan. For example, we had 2 interviews created for someone with a free plan. Doesn't make sense. 
+3. How are we auditing plans for monthly changes. For example, free plan should have 1 interview per month, and it should reset every 30 days of use. 
+4. Resume interviews thing is fickle, not available everytime 
+5. Should we have someone way to reset the interview in between ?
+6. Diagram is probably not sent to planner
+7. Session is not closing - we need to fix it.
+8. Manually closing the session did not end correctly - probabbly a bug because of free plan changes
+9. After the interview is done, we aren't really updating the interview count etc - we need consistent update after the interview is done. 
+10. Real reporting is broken for actual interviews. Need to fix that - this is a bigger piece since we need to get all data and consolidate the report.
+11. Need fixing in the prompt as well basis the interview - 49f45e1f-dcf1-49b3-8b1c-fd9bc8bd3da2

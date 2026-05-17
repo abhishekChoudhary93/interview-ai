@@ -140,10 +140,21 @@ export function parseOverallScoreFraction(debriefOrString) {
       : typeof debriefOrString === 'object' && debriefOrString != null
         ? String(debriefOrString.overall_score || '')
         : '';
-  const m = s.match(/^([\d.]+)\s*\/\s*4/);
-  if (!m) return null;
-  const n = parseFloat(m[1]);
-  return Number.isFinite(n) ? n : null;
+
+  // Support xx/100 unified score formats and map it to equivalent 4-point scale
+  const m100 = s.match(/^([\d.]+)\s*\/\s*100/);
+  if (m100) {
+    const n = parseFloat(m100[1]);
+    return Number.isFinite(n) ? (n / 100) * 4 : null;
+  }
+
+  // Legacy /4 format support
+  const m4 = s.match(/^([\d.]+)\s*\/\s*4/);
+  if (m4) {
+    const n = parseFloat(m4[1]);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 function formatLevelingForSection(section) {
@@ -337,7 +348,7 @@ FULL TRANSCRIPT:
 ${transcript}
 
 INSTRUCTIONS:
-1. For each section: weighted_score reflects the green/red flag balance against the target_level bar. 4.0 = at_target+ across all signals. 3.0 = at_target with one weak signal. 2.0 = below_target. 1.0 = no signal captured. Include status: completed | partial | not_reached.
+1. For each section: weighted_score reflects the green/red flag balance against the target_level bar. Convert this balance to a percentage out of 100 (e.g., 100/100, 88/100, 75/100, 50/100, etc.). Include status: completed | partial | not_reached.
 2. For each section's signals[] in section_scores: pull the signal_id from the flags above; quote the note as evidence; map the score using target_level: green flag = 3-4, red flag = 1-2, no flag = null.
 3. top_moments[]: 2-4 strongest moments and 1-3 clearest gaps from the flags + transcript. Each must reference a specific moment, not generic praise.
 4. summary: 6-7 crisp lines, FAANG-style debrief. Must cover: what was asked (problem + constraints), how the candidate approached it, the highest-signal green flags (bar clears) and red flags (bar misses), and why that supports the verdict. Ground every line in the flag evidence + transcript; no generic praise.
@@ -347,21 +358,21 @@ INSTRUCTIONS:
 VERDICT RULES (non-negotiable):
 - completion < 40% OR duration < 15min  → verdict = "Incomplete — Cannot Assess"
 - completion 40-60% AND not all sections at score 4 → verdict capped at "No Hire"
-- weighted overall < 2.0 → "Strong No Hire"
-- weighted overall 2.0-2.7 → "No Hire"
-- weighted overall 2.8-3.4 AND completion >= 80% → "Hire"
-- weighted overall >= 3.5 AND completion >= 80% → eligible for "Strong Hire"
+- weighted overall < 2.0 (50%) → "Strong No Hire"
+- weighted overall 2.0-2.7 (50%-68%) → "No Hire"
+- weighted overall 2.8-3.4 (70%-85%) AND completion >= 80% → "Hire"
+- weighted overall >= 3.5 (88%+) AND completion >= 80% → eligible for "Strong Hire"
 
 Return:
 {
   "verdict": "...",
   "verdict_reason": "2-3 sentences. Grounded in decisive green/red flags + a specific moment.",
   "summary": "6-7 lines, crisp. What was asked, what they did, key green/red signals, why verdict.",
-  "overall_score": "x.x/4.0",
+  "overall_score": "xx/100",
   "completion_note": "${sectionsAttempted} of ${totalSections} sections in ${totalMinutes} min.",
   "section_scores": {
     "[section_id]": {
-      "weighted_score": "x.x/4.0",
+      "weighted_score": "xx/100",
       "status": "completed|partial|not_reached",
       "signals": [
         {
@@ -426,7 +437,7 @@ export function normalizeSdStructuredDebrief(raw, sectionIds = [], coverageMap =
     const v = rawSs[id];
     if (forced === 'not_reached') {
       section_scores[id] = {
-        weighted_score: '—/4.0',
+        weighted_score: '—/100',
         status: 'not_reached',
         signals: [],
       };
@@ -437,7 +448,7 @@ export function normalizeSdStructuredDebrief(raw, sectionIds = [], coverageMap =
       const st = ['completed', 'partial', 'not_reached'].includes(stRaw) ? stRaw : forced || 'partial';
       if (st === 'not_reached') {
         section_scores[id] = {
-          weighted_score: String(v.weighted_score || '—/4.0'),
+          weighted_score: String(v.weighted_score || '—/100'),
           status: 'not_reached',
           signals: [],
         };
@@ -463,13 +474,13 @@ export function normalizeSdStructuredDebrief(raw, sectionIds = [], coverageMap =
             .filter(Boolean)
         : [];
       section_scores[id] = {
-        weighted_score: String(v.weighted_score || '—/4.0'),
+        weighted_score: String(v.weighted_score || '—/100'),
         status: st,
         signals,
       };
     } else if (forced !== 'not_reached') {
       section_scores[id] = {
-        weighted_score: '—/4.0',
+        weighted_score: '—/100',
         status: forced || 'partial',
         signals: [],
       };
@@ -552,7 +563,7 @@ export function applyDebriefVerdictGuards(debrief, interview, coverageOverride) 
       debrief.section_scores[row.id]
     ) {
       debrief.section_scores[row.id] = {
-        weighted_score: '—/4.0',
+        weighted_score: '—/100',
         status: 'not_reached',
         signals: [],
       };

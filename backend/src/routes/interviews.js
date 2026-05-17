@@ -19,7 +19,7 @@ import { recordSessionEndMetadata } from '../services/interviewDebriefContext.js
 import { resolveTargetLevel, isValidTargetLevel } from '../config/targetLevels.js';
 import { loadUserAndEntitlements } from '../services/entitlementsService.js';
 import { redactInterviewForReport } from '../services/reportRedaction.js';
-import { incrementCompletedInterviews } from '../services/usageService.js';
+import { incrementStartedInterviews } from '../services/usageService.js';
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -110,7 +110,7 @@ export function serializeInterviewDoc(doc, options = {}) {
 export function applyEntitlementsToInterviewResponse(serialized, entitlements) {
   if (!serialized) return serialized;
   const out = { ...serialized, entitlements: entitlements ?? null };
-  if (entitlements?.reportLevel === 'basic') {
+  if (entitlements?.reportLevel === 'basic' && out.status === 'completed') {
     return redactInterviewForReport(out);
   }
   return out;
@@ -251,6 +251,9 @@ router.post('/', async (req, res) => {
       template_version: 'v3',
       selected_template_id: INTERVIEW_CONFIG_ID,
     });
+    
+    await incrementStartedInterviews(userObjectId.toString());
+    
     return res.status(201).json(serializeInterviewDoc(row));
   } catch (e) {
     console.error(e);
@@ -626,7 +629,6 @@ router.post('/:clientId/session/complete', async (req, res) => {
       source: candidateEndedEarlyFromUi ? 'session_complete' : 'session_complete_report',
     });
     await finalizeOrchestratedInterview(doc);
-    await incrementCompletedInterviews(userObjectId.toString());
     const refreshed = await loadUserAndEntitlements(req.userId);
     return res.json(
       applyEntitlementsToInterviewResponse(

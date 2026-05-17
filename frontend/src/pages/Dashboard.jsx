@@ -28,8 +28,8 @@ export default function Dashboard() {
     setLoading(true);
     Promise.all([
       listInterviews({ status: 'completed', sort: '-created_date', limit: 20 }),
-      listInterviews({ status: 'paused', sort: '-created_date', limit: 10 }),
-      listInterviews({ status: 'in_progress', sort: '-created_date', limit: 12 }),
+      listInterviews({ status: 'paused', sort: '-created_date', limit: 50 }),
+      listInterviews({ status: 'in_progress', sort: '-created_date', limit: 50 }),
     ])
       .then(([done, paused, active]) => {
         if (cancelled) return;

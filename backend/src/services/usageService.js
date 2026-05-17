@@ -9,29 +9,29 @@ export function syncUsagePeriod(user) {
   if (!user.usage) user.usage = {};
   if (user.usage.periodKey !== key) {
     user.usage.periodKey = key;
-    user.usage.completedInterviews = 0;
+    user.usage.startedInterviews = 0;
     user.markModified('usage');
   }
-  return user.usage.completedInterviews ?? 0;
+  return user.usage.startedInterviews ?? user.usage.completedInterviews ?? 0;
 }
 
 /**
  * @param {import('mongoose').Document} user
  */
-export function getCompletedInterviewsThisMonth(user) {
+export function getStartedInterviewsThisMonth(user) {
   syncUsagePeriod(user);
-  return user.usage?.completedInterviews ?? 0;
+  return user.usage?.startedInterviews ?? user.usage?.completedInterviews ?? 0;
 }
 
 /**
  * @param {string} userId
  */
-export async function incrementCompletedInterviews(userId) {
+export async function incrementStartedInterviews(userId) {
   const user = await User.findById(userId).exec();
   if (!user) return null;
   syncUsagePeriod(user);
-  user.usage.completedInterviews = (user.usage.completedInterviews ?? 0) + 1;
+  user.usage.startedInterviews = (user.usage.startedInterviews ?? user.usage.completedInterviews ?? 0) + 1;
   user.markModified('usage');
   await user.save();
-  return user.usage.completedInterviews;
+  return user.usage.startedInterviews;
 }

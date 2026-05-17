@@ -137,9 +137,9 @@ export default function Composer({
                     ? 'Type your reply…'
                     : 'Tap the mic to talk, or use the keyboard'
             }
-            className="flex-1 min-h-[44px] max-h-40 resize-none rounded-xl bg-background border-border/60 text-sm leading-relaxed"
+            className="flex-1 min-h-[80px] max-h-40 resize-none rounded-xl bg-background border-border/60 text-sm leading-relaxed"
             disabled={isSending || isStreaming}
-            rows={1}
+            rows={3}
           />
 
           {isStreaming && onAbort ? (

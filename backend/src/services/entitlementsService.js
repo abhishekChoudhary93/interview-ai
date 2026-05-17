@@ -1,6 +1,6 @@
 import { User } from '../models/User.js';
 import { getPlanConfig } from '../config/plans.js';
-import { getCompletedInterviewsThisMonth, syncUsagePeriod } from './usageService.js';
+import { getStartedInterviewsThisMonth, syncUsagePeriod } from './usageService.js';
 
 /**
  * Paid access is valid while status is active or canceled (grace) and period end is in the future.
@@ -83,7 +83,7 @@ export async function getEntitlementsForUser(user) {
   const effective = resolveEffectiveSubscription(user);
   syncUsagePeriod(user);
   const planConfig = getPlanConfig(effective.plan);
-  const used = getCompletedInterviewsThisMonth(user);
+  const used = getStartedInterviewsThisMonth(user);
   const limit = planConfig.monthlyInterviewLimit;
   const unlimited = limit == null;
   const remaining = unlimited ? null : Math.max(0, limit - used);

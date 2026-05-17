@@ -13,13 +13,11 @@ import {
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import ChatThread from '@/components/interview/ChatThread';
 import Composer from '@/components/interview/Composer';
-import ProblemPanel from '@/components/interview/ProblemPanel';
-import Scratchpad from '@/components/interview/Scratchpad';
-import DesignCanvas from '@/components/interview/DesignCanvas';
-import VideoStage from '@/components/interview/VideoStage';
-import InterviewHeader from '@/components/interview/InterviewHeader';
 import SessionDialog, { WrappingUpDialog } from '@/components/interview/SessionDialog';
 import { useInterviewerVoice } from '@/hooks/useInterviewerVoice';
+import InterviewHeader from '@/components/interview/InterviewHeader';
+import VideoStage from '@/components/interview/VideoStage';
+import DesignCanvas from '@/components/interview/DesignCanvas';
 
 /**
  * Build the conversation list shown in the chat thread from the canonical
@@ -57,7 +55,6 @@ export default function Interview() {
   const [isEndingSession, setIsEndingSession] = useState(false);
   const [isWrappingUp, setIsWrappingUp] = useState(false);
 
-  const [railOpen, setRailOpen] = useState(true);
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
@@ -311,20 +308,6 @@ export default function Interview() {
     voice.cancel();
   }, [voice, clearInterviewDonePoll]);
 
-  /* ---------- notes & canvas autosave ---------- */
-
-  const persistNotes = useCallback(
-    async (notes) => {
-      if (!interviewId) return;
-      try {
-        await updateInterview(interviewId, { notes });
-      } catch (e) {
-        console.warn('[notes] save failed:', e);
-      }
-    },
-    [interviewId]
-  );
-
   /**
    * Persist the design canvas. Both the raw Excalidraw scene (for rehydration
    * on resume) and the textual summary (for the LLM prompt) are sent in a
@@ -394,6 +377,9 @@ export default function Interview() {
   );
   const canEndEarly = candidateTurnCount >= 1;
 
+  const problem = interviewConfig?.problem || interviewConfig?.primary_question || null;
+  const problemTitle = problem?.title || (typeof problem === 'string' ? problem : null);
+
   /* ---------- render ---------- */
 
   if (!interview || isPreparing) {
@@ -451,8 +437,6 @@ export default function Interview() {
       ) : null}
       <InterviewHeader
         interview={interview}
-        railOpen={railOpen}
-        onToggleRail={() => setRailOpen((v) => !v)}
         onPause={() => setConfirmKind('pause')}
         onAbandon={() => setConfirmKind('abandon')}
         onEndAndReport={() => setConfirmKind('end')}
@@ -477,20 +461,32 @@ export default function Interview() {
             autoSaveId="interview-sd-layout"
             className="flex-1 min-w-0"
           >
-            <Panel defaultSize={58} minSize={30} className="flex flex-col min-h-0">
-              <DesignCanvas
-                ref={canvasRef}
-                initialScene={interview.canvas_scene}
-                onPersist={persistCanvas}
-              />
-            </Panel>
-            <PanelResizeHandle className="w-1.5 bg-border/30 hover:bg-accent/40 transition-colors" />
-            <Panel defaultSize={42} minSize={28} className="flex flex-col min-h-0">
+            <Panel defaultSize={70} minSize={30} className="flex flex-col min-h-0">
               <motion.main
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                className="flex-1 min-w-0 min-h-0 flex flex-col border-l border-border/40"
+                className="flex-1 min-w-0 min-h-0 flex flex-col border-r border-border/40"
               >
+                {problem && (
+                  <div className="bg-muted/30 border-b border-border/40 px-4 py-3 flex flex-col max-h-48 overflow-y-auto">
+                    {typeof problem === 'string' ? (
+                      <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">{problem}</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {problem.title && (
+                          <h2 className="text-sm font-semibold text-foreground">
+                            {problem.title}
+                          </h2>
+                        )}
+                        {problem.brief && (
+                          <p className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                            {problem.brief}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <VideoStage
                   mode={mode}
                   isInterviewerSpeaking={voice.isSpeaking}
@@ -518,6 +514,14 @@ export default function Interview() {
                 />
               </motion.main>
             </Panel>
+            <PanelResizeHandle className="w-1.5 bg-border/30 hover:bg-accent/40 transition-colors" />
+            <Panel defaultSize={30} minSize={20} className="flex flex-col min-h-0">
+              <DesignCanvas
+                ref={canvasRef}
+                initialScene={interview.canvas_scene}
+                onPersist={persistCanvas}
+              />
+            </Panel>
           </PanelGroup>
         ) : (
           <motion.main
@@ -525,6 +529,26 @@ export default function Interview() {
             animate={{ opacity: 1 }}
             className="flex-1 min-w-0 flex flex-col"
           >
+            {problem && (
+              <div className="bg-muted/30 border-b border-border/40 px-4 py-3 flex flex-col max-h-48 overflow-y-auto">
+                {typeof problem === 'string' ? (
+                  <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">{problem}</p>
+                ) : (
+                  <div className="space-y-2">
+                    {problem.title && (
+                      <h2 className="text-sm font-semibold text-foreground">
+                        {problem.title}
+                      </h2>
+                    )}
+                    {problem.brief && (
+                      <p className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                        {problem.brief}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <VideoStage
               mode={mode}
               isInterviewerSpeaking={voice.isSpeaking}
@@ -554,19 +578,6 @@ export default function Interview() {
             />
           </motion.main>
         )}
-
-        <aside
-          className={`hidden lg:flex flex-col border-l border-border/50 bg-muted/20 overflow-hidden transition-[width] duration-200 ${
-            railOpen ? 'w-[320px]' : 'w-0'
-          }`}
-        >
-          {railOpen && (
-            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-              <ProblemPanel config={interviewConfig} />
-              <Scratchpad value={interview.notes || ''} onPersist={persistNotes} />
-            </div>
-          )}
-        </aside>
       </div>
 
       <SessionDialog

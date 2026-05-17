@@ -7,8 +7,6 @@ import {
   PauseCircle,
   ClipboardCheck,
   Loader2,
-  PanelRightOpen,
-  PanelRightClose,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -58,8 +56,6 @@ export default function InterviewHeader({
   onPause,
   onAbandon,
   onEndAndReport,
-  onToggleRail,
-  railOpen,
   isProcessing,
   isEndingSession,
   canEndEarly,
@@ -153,17 +149,6 @@ export default function InterviewHeader({
               <span className="hidden sm:inline text-xs font-medium">Pause</span>
             </Button>
           )}
-
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={onToggleRail}
-            className="rounded-xl hidden lg:inline-flex"
-            title={railOpen ? 'Hide problem panel' : 'Show problem panel'}
-          >
-            {railOpen ? <PanelRightClose className="w-5 h-5" /> : <PanelRightOpen className="w-5 h-5" />}
-          </Button>
 
           <Button
             type="button"

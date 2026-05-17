@@ -276,7 +276,7 @@ function buildOrchestratedSeed() {
 
   const sectionScores = {
     requirements: {
-      weighted_score: '4.0/4.0',
+      weighted_score: '100/100',
       status: 'completed',
       signals: [
         {
@@ -294,7 +294,7 @@ function buildOrchestratedSeed() {
       ],
     },
     high_level_design: {
-      weighted_score: '4.0/4.0',
+      weighted_score: '100/100',
       status: 'completed',
       signals: [
         {
@@ -306,7 +306,7 @@ function buildOrchestratedSeed() {
       ],
     },
     deep_dive: {
-      weighted_score: '4.0/4.0',
+      weighted_score: '100/100',
       status: 'completed',
       signals: [
         {
@@ -324,7 +324,7 @@ function buildOrchestratedSeed() {
       ],
     },
     tradeoffs: {
-      weighted_score: '3.5/4.0',
+      weighted_score: '88/100',
       status: 'completed',
       signals: [
         {
@@ -342,7 +342,7 @@ function buildOrchestratedSeed() {
       ],
     },
     operations: {
-      weighted_score: '3.0/4.0',
+      weighted_score: '75/100',
       status: 'partial',
       signals: [
         {
@@ -364,7 +364,7 @@ function buildOrchestratedSeed() {
   const debrief = {
     debrief_kind: 'system_design_rubric',
     verdict: 'Strong Hire',
-    overall_score: '3.7/4.0',
+    overall_score: '92/100',
     verdict_reason:
       'Strong technical depth across requirements, architecture, and the deep dive. Volunteered request coalescing for the viral-link stampede without prompting and articulated trade-offs both ways.',
     completion_note: '5 of 5 sections covered in 14.8 min (operations slightly abbreviated).',

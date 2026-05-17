@@ -7,6 +7,8 @@ import authRoutes from './routes/auth.js';
 import interviewRoutes from './routes/interviews.js';
 import { runSeed } from './seed/runSeed.js';
 import publicRoutes from './routes/public.js';
+import subscriptionRoutes from './routes/subscription.js';
+import billingRoutes from './routes/billing.js';
 import { cookieParseMiddleware } from './middleware/cookieParse.js';
 import { loadInterviewConfig, INTERVIEW_CONFIG_ID } from './services/interviewConfig.js';
 import { resolveOpenRouterModel } from './config.js';
@@ -29,6 +31,8 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use('/api/public', publicRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/interviews', interviewRoutes);
+app.use('/api/subscription', subscriptionRoutes);
+app.use('/api/billing', billingRoutes);
 
 /**
  * Make the LLM mode obvious in startup logs so a missing/invalid API key is

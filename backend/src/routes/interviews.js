@@ -17,6 +17,9 @@ import {
 import { finalizeOrchestratedInterview } from '../services/interviewCompleteService.js';
 import { recordSessionEndMetadata } from '../services/interviewDebriefContext.js';
 import { resolveTargetLevel, isValidTargetLevel } from '../config/targetLevels.js';
+import { loadUserAndEntitlements } from '../services/entitlementsService.js';
+import { redactInterviewForReport } from '../services/reportRedaction.js';
+import { incrementCompletedInterviews } from '../services/usageService.js';
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -95,6 +98,20 @@ export function serializeInterviewDoc(doc, options = {}) {
   };
   if (options.includeTranscript) {
     out.transcript_messages = buildTranscriptMessagesForApi(o);
+  }
+  return out;
+}
+
+/**
+ * Attach entitlements and redact report fields when reportLevel is basic.
+ * @param {Record<string, unknown>} serialized
+ * @param {Record<string, unknown> | null | undefined} entitlements
+ */
+export function applyEntitlementsToInterviewResponse(serialized, entitlements) {
+  if (!serialized) return serialized;
+  const out = { ...serialized, entitlements: entitlements ?? null };
+  if (entitlements?.reportLevel === 'basic') {
+    return redactInterviewForReport(out);
   }
   return out;
 }
@@ -190,6 +207,15 @@ router.post('/', async (req, res) => {
       return res.status(400).json({
         error:
           'Invalid target_level. Allowed: INTERN, SDE_1, SDE_2, SR_SDE, PRINCIPAL_STAFF, SR_PRINCIPAL.',
+      });
+    }
+
+    const { entitlements } = await loadUserAndEntitlements(req.userId);
+    if (!entitlements?.canStartInterview) {
+      return res.status(402).json({
+        code: 'QUOTA_EXCEEDED',
+        error: 'Monthly interview limit reached. Upgrade your plan to continue.',
+        entitlements,
       });
     }
 
@@ -563,8 +589,14 @@ router.post('/:clientId/session/complete', async (req, res) => {
     if (!doc.interview_config) {
       return res.status(400).json({ error: 'Not an orchestrated interview' });
     }
+    const { entitlements } = await loadUserAndEntitlements(req.userId);
     if (doc.status === 'completed') {
-      return res.json(serializeInterviewDoc(doc, { includeTranscript: true }));
+      return res.json(
+        applyEntitlementsToInterviewResponse(
+          serializeInterviewDoc(doc, { includeTranscript: true }),
+          entitlements
+        )
+      );
     }
 
     const turns = Array.isArray(doc.conversation_turns) ? doc.conversation_turns : [];
@@ -594,7 +626,14 @@ router.post('/:clientId/session/complete', async (req, res) => {
       source: candidateEndedEarlyFromUi ? 'session_complete' : 'session_complete_report',
     });
     await finalizeOrchestratedInterview(doc);
-    return res.json(serializeInterviewDoc(doc, { includeTranscript: true }));
+    await incrementCompletedInterviews(userObjectId.toString());
+    const refreshed = await loadUserAndEntitlements(req.userId);
+    return res.json(
+      applyEntitlementsToInterviewResponse(
+        serializeInterviewDoc(doc, { includeTranscript: true }),
+        refreshed.entitlements
+      )
+    );
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: e.message || 'Complete failed' });
@@ -612,7 +651,13 @@ router.get('/:clientId', async (req, res) => {
       clientId: req.params.clientId,
     }).exec();
     if (!doc) return res.status(404).json({ error: 'Not found' });
-    return res.json(serializeInterviewDoc(doc, { includeTranscript: true }));
+    const { entitlements } = await loadUserAndEntitlements(req.userId);
+    return res.json(
+      applyEntitlementsToInterviewResponse(
+        serializeInterviewDoc(doc, { includeTranscript: true }),
+        entitlements
+      )
+    );
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'Get failed' });

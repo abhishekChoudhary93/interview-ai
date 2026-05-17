@@ -5,6 +5,7 @@ import { Mic, ArrowRight, Clock, TrendingUp, BarChart3, Plus, PlayCircle } from 
 import { Button } from "@/components/ui/button";
 import { listInterviews } from '@/api/interviews';
 import { useAuth } from '@/lib/AuthContext';
+import { useSubscription } from '@/lib/SubscriptionContext';
 import ScoreGauge from "../components/ScoreGauge";
 import { formatInterviewType } from "@/utils/interviewLabels";
 
@@ -13,6 +14,7 @@ export default function Dashboard() {
   const [continuable, setContinuable] = useState([]);
   const [loading, setLoading] = useState(true);
   const { user, isAuthenticated } = useAuth();
+  const { entitlements } = useSubscription();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -88,6 +90,25 @@ export default function Dashboard() {
           </Button>
         </Link>
       </div>
+
+      {entitlements ? (
+        <div className="mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-border/50 bg-card/60 px-5 py-4">
+          <p className="text-sm text-muted-foreground">
+            <span className="font-medium text-foreground capitalize">{entitlements.effectivePlan}</span>
+            {' · '}
+            {entitlements.interviewsLimit == null
+              ? `${entitlements.interviewsUsed} interviews used this month (unlimited)`
+              : `${entitlements.interviewsUsed} of ${entitlements.interviewsLimit} interviews used this month`}
+          </p>
+          {entitlements.effectivePlan === 'starter' || !entitlements.canStartInterview ? (
+            <Link to="/billing">
+              <Button variant="outline" size="sm" className="rounded-xl">
+                Upgrade plan
+              </Button>
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
 
       {continuable.length > 0 && (
         <div className="mb-10">

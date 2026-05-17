@@ -22,6 +22,7 @@ import { ScoreRadarChart, ScoreProgressionChart, ScoreLegend } from "../componen
 import { formatInterviewType } from "@/utils/interviewLabels";
 import InterviewTranscript from "../components/InterviewTranscript";
 import ReportCanvas from "../components/ReportCanvas";
+import PaywallOverlay from "../components/PaywallOverlay";
 import {
   isOrchestratedSession,
   reportedQuestionCountLabel,
@@ -302,6 +303,8 @@ export default function Report() {
   };
 
   const debrief = interview.debrief;
+  const isBasicReport =
+    interview.entitlements?.reportLevel === "basic" || Boolean(interview._reportRedacted);
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 pb-20">
@@ -348,8 +351,25 @@ export default function Report() {
         </div>
       </motion.div>
 
+      {isBasicReport ? (
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-8 rounded-2xl border border-accent/30 bg-accent/5 px-5 py-4 text-sm text-muted-foreground"
+        >
+          Your overall score is <strong className="text-foreground">{interview.overall_score ?? "—"}%</strong>.
+          {debrief?.verdict ? (
+            <>
+              {" "}
+              Verdict: <strong className="text-foreground">{debrief.verdict}</strong>.
+            </>
+          ) : null}{" "}
+          Unlock the brutal breakdown to see signal-level evidence and why you got this verdict.
+        </motion.div>
+      ) : null}
+
       {/* Transcript */}
-      {transcriptMessages.length > 0 && (
+      {transcriptMessages.length > 0 && !isBasicReport && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -393,8 +413,14 @@ export default function Report() {
         </motion.div>
       )}
 
+      {isBasicReport && transcriptMessages.length > 0 ? (
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
+          <PaywallOverlay title="Full transcript locked" description="Upgrade to Pro or Elite to review every exchange from your session." />
+        </motion.div>
+      ) : null}
+
       {/* Exdraw canvas */}
-      {hasCanvasScene && (
+      {hasCanvasScene && !isBasicReport && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -425,6 +451,12 @@ export default function Report() {
           {canvasOpen ? <ReportCanvas scene={interview.canvas_scene} /> : null}
         </motion.div>
       )}
+
+      {isBasicReport && hasCanvasScene ? (
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
+          <PaywallOverlay title="Canvas replay locked" description="See your whiteboard and architecture sketch with a paid plan." />
+        </motion.div>
+      ) : null}
 
       {/* New-shape: rubric-signal-per-section debrief */}
       {newShape && debrief && typeof debrief === "object" && (
@@ -457,7 +489,14 @@ export default function Report() {
             </p>
           ) : null}
 
-          {sectionRows.length > 0 && (
+          {isBasicReport ? (
+            <div className="mb-8">
+            <PaywallOverlay
+              title="Brutal section breakdown"
+              description="See per-signal scores, evidence quotes, and hire/no-hire reasoning with Pro or Elite."
+            />
+            </div>
+          ) : sectionRows.length > 0 ? (
             <div className="space-y-3 mb-8">
               <h3 className="font-space text-sm font-semibold flex items-center gap-2">
                 <Target className="h-4 w-4 text-accent" /> Section breakdown
@@ -466,9 +505,9 @@ export default function Report() {
                 <SectionScoreCard key={row.id} id={row.id} label={row.label} entry={row.entry} />
               ))}
             </div>
-          )}
+          ) : null}
 
-          {Array.isArray(debrief.top_moments) && debrief.top_moments.length > 0 && (
+          {!isBasicReport && Array.isArray(debrief.top_moments) && debrief.top_moments.length > 0 && (
             <div className="grid md:grid-cols-2 gap-6 mb-8">
               <div>
                 <h3 className="font-space text-sm font-semibold mb-3 flex items-center gap-2">
@@ -495,8 +534,9 @@ export default function Report() {
             </div>
           )}
 
-          {(Array.isArray(debrief.strengths) && debrief.strengths.length > 0) ||
-          (Array.isArray(debrief.improvements) && debrief.improvements.length > 0) ? (
+          {!isBasicReport &&
+          ((Array.isArray(debrief.strengths) && debrief.strengths.length > 0) ||
+          (Array.isArray(debrief.improvements) && debrief.improvements.length > 0)) ? (
             <div className="grid md:grid-cols-2 gap-6 mb-8">
               {Array.isArray(debrief.strengths) && debrief.strengths.length > 0 && (
                 <div>
@@ -517,7 +557,7 @@ export default function Report() {
             </div>
           ) : null}
 
-          {Array.isArray(debrief.next_session_focus) && debrief.next_session_focus.length > 0 && (
+          {!isBasicReport && Array.isArray(debrief.next_session_focus) && debrief.next_session_focus.length > 0 && (
             <div>
               <h3 className="font-space text-sm font-semibold mb-2 flex items-center gap-2">
                 <Lightbulb className="h-4 w-4 text-accent" /> Focus next session
@@ -550,7 +590,8 @@ export default function Report() {
             </div>
           )}
 
-          {liveSignals &&
+          {!isBasicReport &&
+            liveSignals &&
             ((Array.isArray(liveSignals.strong) && liveSignals.strong.length > 0) ||
               (Array.isArray(liveSignals.weak) && liveSignals.weak.length > 0)) && (
               <div className="mt-8 pt-6 border-t border-border/40">
@@ -596,15 +637,21 @@ export default function Report() {
 
       {/* ====================== LEGACY VIEW ====================== */}
       {/* Pre-orchestrator interviews still render the original 5-pip / per-question shape. */}
-      {!newShape && (
-        <LegacyReportSections
-          interview={interview}
-          chartQuestions={chartQuestions}
-          orchestrated={orchestrated}
-          expandedQ={expandedQ}
-          setExpandedQ={setExpandedQ}
-        />
-      )}
+      {!newShape &&
+        (isBasicReport ? (
+          <PaywallOverlay
+            title="Detailed scores locked"
+            description="Upgrade to see per-dimension charts, question breakdowns, and full feedback."
+          />
+        ) : (
+          <LegacyReportSections
+            interview={interview}
+            chartQuestions={chartQuestions}
+            orchestrated={orchestrated}
+            expandedQ={expandedQ}
+            setExpandedQ={setExpandedQ}
+          />
+        ))}
     </div>
   );
 }

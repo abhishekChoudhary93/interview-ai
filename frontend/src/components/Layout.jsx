@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
-import { Mic, Home, History, LogOut } from "lucide-react";
+import { Mic, Home, History, LogOut, CreditCard } from "lucide-react";
 import { useAuth } from '@/lib/AuthContext';
 
 export default function Layout() {
@@ -29,6 +29,7 @@ export default function Layout() {
                 <NavLink to="/dashboard" icon={<Home className="w-4 h-4" />} label="Dashboard" current={location.pathname} />
                 <NavLink to="/setup" icon={<Mic className="w-4 h-4" />} label="New Interview" current={location.pathname} />
                 <NavLink to="/history" icon={<History className="w-4 h-4" />} label="History" current={location.pathname} />
+                <NavLink to="/billing" icon={<CreditCard className="w-4 h-4" />} label="Billing" current={location.pathname} />
                 <button
                   type="button"
                   onClick={async () => {

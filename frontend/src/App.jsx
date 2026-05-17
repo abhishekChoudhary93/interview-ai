@@ -1,10 +1,13 @@
 import { Toaster } from '@/components/ui/toaster';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClientInstance } from '@/lib/query-client';
-import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-router-dom';
+import { useEffect } from 'react';
+import { useToast } from '@/components/ui/use-toast';
 import PageNotFound from '@/lib/PageNotFound';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import { MarketProvider } from '@/lib/MarketContext';
+import { SubscriptionProvider } from '@/lib/SubscriptionContext';
 import RequireAuth from '@/components/RequireAuth';
 import Layout from '@/components/Layout';
 import Landing from '@/pages/Landing';
@@ -15,10 +18,18 @@ import Interview from '@/pages/Interview';
 import Report from '@/pages/Report';
 import Dashboard from '@/pages/Dashboard';
 import History from '@/pages/History';
+import Billing from '@/pages/Billing';
 import DebugTimeline from '@/pages/DebugTimeline';
 
 const AppRoutes = () => {
   const { isLoadingAuth } = useAuth();
+  const location = useLocation();
+  const { dismiss } = useToast();
+
+  useEffect(() => {
+    dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
 
   if (isLoadingAuth) {
     return (
@@ -41,6 +52,7 @@ const AppRoutes = () => {
           <Route path="/report" element={<Report />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/history" element={<History />} />
+          <Route path="/billing" element={<Billing />} />
         </Route>
       </Route>
       <Route path="*" element={<PageNotFound />} />
@@ -53,10 +65,12 @@ function App() {
     <AuthProvider>
       <QueryClientProvider client={queryClientInstance}>
         <MarketProvider>
-          <Router>
-            <AppRoutes />
-          </Router>
-          <Toaster />
+          <SubscriptionProvider>
+            <Router>
+              <AppRoutes />
+            </Router>
+            <Toaster />
+          </SubscriptionProvider>
         </MarketProvider>
       </QueryClientProvider>
     </AuthProvider>

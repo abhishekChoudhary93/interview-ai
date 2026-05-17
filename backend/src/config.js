@@ -155,6 +155,16 @@ export const config = {
   otpExpiresMinutes: Number(envString('OTP_EXPIRES_MINUTES', '10')) || 10,
   otpResendCooldownSeconds: Number(envString('OTP_RESEND_COOLDOWN_SECONDS', '60')) || 60,
   otpMaxAttempts: Number(envString('OTP_MAX_ATTEMPTS', '5')) || 5,
+  /** Starter tier: completed interviews allowed per calendar month (UTC). */
+  starterMonthlyInterviewLimit:
+    Number(envString('STARTER_MONTHLY_INTERVIEW_LIMIT', '1')) || 1,
+  /** Pro tier: completed interviews allowed per calendar month (UTC). */
+  proMonthlyInterviewLimit: Number(envString('PRO_MONTHLY_INTERVIEW_LIMIT', '5')) || 5,
+  razorpayKeyId: (process.env.RAZORPAY_KEY_ID || '').trim(),
+  razorpayKeySecret: (process.env.RAZORPAY_KEY_SECRET || '').trim(),
+  razorpayWebhookSecret: (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim(),
+  /** Optional header value for POST /api/subscription/dev/set-plan in production. */
+  subscriptionAdminSecret: (process.env.SUBSCRIPTION_ADMIN_SECRET || '').trim(),
 };
 
 /**

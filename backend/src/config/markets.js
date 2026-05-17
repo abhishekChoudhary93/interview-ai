@@ -1,12 +1,10 @@
 /**
- * Authoritative per-market catalog (pricing display + gateway hints). v1: static config in repo.
- * Replace placeholder stripePriceId / razorpayPlanId when billing is wired.
- * Two tiers only: Free trial + Pro (individual practice—no team/seat plan).
+ * Per-market catalog (pricing display + gateway hints). v2: Starter / Pro / Elite.
+ * Replace placeholder razorpayPlanId when Razorpay Plans are created in dashboard.
  */
 
 export const MARKET_IDS = ['US', 'EU', 'IN', 'ROW'];
 
-/** EU member states + UK + EEA (NO, IS, LI) + CH — typical “EU pricing” block (placeholder). */
 export const EU_ISO_COUNTRIES = new Set([
   'AT',
   'BE',
@@ -42,18 +40,25 @@ export const EU_ISO_COUNTRIES = new Set([
   'CH',
 ]);
 
-const FREE_FEATURES = [
-  'Up to 3 completed mock interviews during your trial',
-  'Full AI interviewer experience (voice-first practice)',
-  'Summary scores and essential feedback',
-  'Everything above for the length of your trial',
+const STARTER_FEATURES = [
+  '1 complete AI mock interview/month',
+  'Core performance feedback & text summary',
+  'Standard role-based question set',
 ];
 
 const PRO_FEATURES = [
-  'Unlimited mock interviews',
-  'Full scored reports and detailed breakdowns',
-  'Unlimited history and progress tracking',
-  'Priority email support',
+  '5 premium mock interviews/month',
+  'Highly realistic & brutal feedback reports',
+  'Custom role- & company-specific questions',
+  'Full interview history & progress analytics',
+];
+
+const ELITE_FEATURES = [
+  'Unlimited premium mock interviews',
+  'Comprehensive reports & architectural suggestions',
+  'Early access to System Design tracks',
+  'Interactive Behavioral Blueprint scenarios',
+  'Persistent canvas & audio mock history',
 ];
 
 function tier(id, name, intervalLabel, amountDisplay, highlight, features, gatewayIds) {
@@ -70,90 +75,94 @@ function tier(id, name, intervalLabel, amountDisplay, highlight, features, gatew
 }
 
 const NEUTRAL_COPY = {
-  pricingTitle: 'Start free, go Pro when you’re ready',
+  pricingTitle: 'Flexible plans tailored to your preparation pace',
   pricingSubtitle:
-    'Try mock interviews on us—upgrade when you want unlimited practice and full reports.',
+    'Accelerate your tech career with realistic AI-driven mock interviews, brutal but constructive feedback, and custom role pathways.',
 };
+
+function marketPricing(currencySymbol, proDisplay, eliteDisplay, proStripe, eliteStripe, proRzp, eliteRzp) {
+  return [
+    tier('starter', 'Starter', 'forever', `${currencySymbol}0`, false, STARTER_FEATURES, {}),
+    tier(
+      'pro_monthly',
+      'Pro',
+      'per month',
+      proDisplay,
+      true,
+      PRO_FEATURES,
+      { stripePriceId: proStripe, razorpayPlanId: proRzp }
+    ),
+    tier(
+      'elite_monthly',
+      'Elite',
+      'per month',
+      eliteDisplay,
+      false,
+      ELITE_FEATURES,
+      { stripePriceId: eliteStripe, razorpayPlanId: eliteRzp }
+    ),
+  ];
+}
 
 export const MARKETS = {
   US: {
     currency: 'USD',
     currencySymbol: '$',
     paymentProvider: 'stripe',
-    pricing: [
-      tier(
-        'free_trial',
-        'Free trial',
-        'for your trial',
-        '$0',
-        false,
-        FREE_FEATURES,
-        {}
-      ),
-      tier(
-        'pro_monthly',
-        'Pro',
-        'per month',
-        '$29',
-        true,
-        PRO_FEATURES,
-        { stripePriceId: 'price_placeholder_us_pro' }
-      ),
-    ],
+    pricing: marketPricing(
+      '$',
+      '$7.99',
+      '$14.99',
+      'price_placeholder_us_pro',
+      'price_placeholder_us_elite',
+      null,
+      null
+    ),
     copy: { ...NEUTRAL_COPY },
   },
   EU: {
     currency: 'EUR',
     currencySymbol: '€',
     paymentProvider: 'stripe',
-    pricing: [
-      tier('free_trial', 'Free trial', 'for your trial', '€0', false, FREE_FEATURES, {}),
-      tier(
-        'pro_monthly',
-        'Pro',
-        'per month',
-        '€27',
-        true,
-        PRO_FEATURES,
-        { stripePriceId: 'price_placeholder_eu_pro' }
-      ),
-    ],
+    pricing: marketPricing(
+      '€',
+      '€7.99',
+      '€14.99',
+      'price_placeholder_eu_pro',
+      'price_placeholder_eu_elite',
+      null,
+      null
+    ),
     copy: { ...NEUTRAL_COPY },
   },
   IN: {
     currency: 'INR',
     currencySymbol: '₹',
     paymentProvider: 'razorpay',
-    pricing: [
-      tier('free_trial', 'Free trial', 'for your trial', '₹0', false, FREE_FEATURES, {}),
-      tier(
-        'pro_monthly',
-        'Pro',
-        'per month',
-        '₹2,499',
-        true,
-        PRO_FEATURES,
-        { razorpayPlanId: 'plan_placeholder_in_pro' }
-      ),
-    ],
+    pricing: marketPricing(
+      '₹',
+      '₹499',
+      '₹999',
+      null,
+      null,
+      'plan_placeholder_in_pro',
+      'plan_placeholder_in_elite'
+    ),
     copy: { ...NEUTRAL_COPY },
   },
   ROW: {
     currency: 'USD',
     currencySymbol: '$',
     paymentProvider: 'stripe',
-    pricing: [
-      tier('free_trial', 'Free trial', 'for your trial', '$0', false, FREE_FEATURES, {}),
-      tier(
-        'pro_monthly',
-        'Pro',
-        'per month',
-        '$29',
-        true,
-        PRO_FEATURES,
-        { stripePriceId: 'price_placeholder_row_pro' }
-      ),
-    ],
+    pricing: marketPricing(
+      '$',
+      '$7.99',
+      '$14.99',
+      'price_placeholder_row_pro',
+      'price_placeholder_row_elite',
+      null,
+      null
+    ),
     copy: { ...NEUTRAL_COPY },
   },
 };

@@ -19,6 +19,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createInterview } from '@/api/interviews';
 import { useAuth } from '@/lib/AuthContext';
+import { useSubscription } from '@/lib/SubscriptionContext';
+import { Badge } from '@/components/ui/badge';
+import { Link } from 'react-router-dom';
 
 /**
  * Six-level interviewing taxonomy. Single source of truth for the new
@@ -93,9 +96,14 @@ const SDM_ROLE_CHIPS = [
   "VP Engineering",
 ];
 
+function requiresElite(interviewType) {
+  return interviewType === 'behavioral' || interviewType === 'mixed';
+}
+
 export default function Setup() {
   const navigate = useNavigate();
   const { isAuthenticated } = useAuth();
+  const { entitlements } = useSubscription();
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({
@@ -131,12 +139,22 @@ export default function Setup() {
 
   const startInterview = async () => {
     setLoading(true);
-    const interview = await createInterview({
-      ...form,
-      status: "in_progress",
-      questions: [],
-    });
-    navigate(`/interview?id=${interview.id}`);
+    try {
+      const interview = await createInterview({
+        ...form,
+        status: "in_progress",
+        questions: [],
+      });
+      navigate(`/interview?id=${interview.id}`);
+    } catch (e) {
+      if (e.status === 402) {
+        navigate('/billing');
+        return;
+      }
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -280,21 +298,43 @@ export default function Setup() {
               subtitle="What kind of loop are you preparing for?"
             >
               <div className="space-y-3">
-                {interviewTypes.map(t => (
-                  <button
-                    key={t.value}
-                    type="button"
-                    onClick={() => set("interview_type", t.value)}
-                    className={`w-full p-5 rounded-2xl border text-left transition-all duration-200 ${
-                      form.interview_type === t.value
-                        ? "bg-accent/10 border-accent/30 ring-2 ring-accent/20"
-                        : "bg-card border-border hover:border-accent/20"
-                    }`}
-                  >
-                    <p className="font-semibold">{t.label}</p>
-                    <p className="text-sm text-muted-foreground mt-1">{t.desc}</p>
-                  </button>
-                ))}
+                {interviewTypes.map((t) => {
+                  const eliteOnly = requiresElite(t.value);
+                  const locked = eliteOnly && !entitlements?.features?.behavioralBlueprints;
+                  return (
+                    <button
+                      key={t.value}
+                      type="button"
+                      disabled={locked}
+                      onClick={() => !locked && set("interview_type", t.value)}
+                      className={`w-full p-5 rounded-2xl border text-left transition-all duration-200 ${
+                        form.interview_type === t.value
+                          ? "bg-accent/10 border-accent/30 ring-2 ring-accent/20"
+                          : locked
+                            ? "bg-muted/30 border-border/40 opacity-60 cursor-not-allowed"
+                            : "bg-card border-border hover:border-accent/20"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-semibold">{t.label}</p>
+                        {eliteOnly ? (
+                          <Badge variant="outline" className="text-xs shrink-0">
+                            Elite
+                          </Badge>
+                        ) : null}
+                      </div>
+                      <p className="text-sm text-muted-foreground mt-1">{t.desc}</p>
+                      {locked ? (
+                        <p className="text-xs text-accent mt-2">
+                          <Link to="/billing" className="underline">
+                            Upgrade to Elite
+                          </Link>{" "}
+                          when available — system design is included on all plans today.
+                        </p>
+                      ) : null}
+                    </button>
+                  );
+                })}
               </div>
             </StepWrapper>
           )}

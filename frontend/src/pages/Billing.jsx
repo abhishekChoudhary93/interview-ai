@@ -40,8 +40,8 @@ export default function Billing() {
 
   const usageLabel =
     entitlements?.interviewsLimit == null
-      ? `${entitlements?.interviewsUsed ?? 0} interviews used this month (unlimited)`
-      : `${entitlements?.interviewsUsed ?? 0} of ${entitlements.interviewsLimit} interviews used this month`;
+      ? `${entitlements?.interviewsUsed ?? 0} interviews used this period (unlimited)`
+      : `${entitlements?.interviewsUsed ?? 0} of ${entitlements.interviewsLimit} interviews used this period`;
 
   const handleUpgrade = async (plan) => {
     if (!razorpayConfigured || paymentProvider !== 'razorpay') {

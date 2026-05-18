@@ -11,6 +11,7 @@ import {
   isRazorpayConfigured,
 } from '../services/razorpayService.js';
 import { getEntitlementsForUser } from '../services/entitlementsService.js';
+import { resetUsageForNewSubscriptionPeriod } from '../services/usageService.js';
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -100,6 +101,7 @@ router.post('/razorpay/verify', async (req, res) => {
     user.subscription.currentPeriodEnd = periodEnd;
     user.subscription.lastPaymentAt = now;
     user.markModified('subscription');
+    resetUsageForNewSubscriptionPeriod(user, { periodStart: now, periodEnd });
     await user.save();
 
     await PaymentEvent.create({

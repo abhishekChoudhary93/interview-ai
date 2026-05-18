@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /**
  * Sentence-buffered TTS for the streaming interviewer reply.
@@ -154,7 +154,7 @@ export function useInterviewerVoice({ enabled }) {
     };
   }, [supported]);
 
-  return {
+  return useMemo(() => ({
     supported,
     voices,
     voiceName,
@@ -163,5 +163,5 @@ export function useInterviewerVoice({ enabled }) {
     feedTokens,
     flushPending,
     cancel,
-  };
+  }), [supported, voices, voiceName, setVoiceName, isSpeaking, feedTokens, flushPending, cancel]);
 }

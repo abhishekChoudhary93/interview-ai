@@ -209,27 +209,5 @@ export async function generateOpeningLine({ interview: _interview, config }) {
  * the prefix byte-stable across the warmup → first real turn boundary.
  */
 export function warmExecutorPrefix({ config, interview }) {
-  return Promise.resolve().then(async () => {
-    try {
-      const system = buildSystemPrompt({
-        config,
-        interview,
-        sessionState: { opening_phase: 'awaiting_ack', next_directive: null },
-      });
-      // We don't care about the output — we just want OpenRouter to register
-      // the system prefix in DeepSeek's cache. Tiny max_tokens keeps the
-      // warmup cost trivial (~$0.001 per session).
-      await invokeLLM({
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: '.' },
-        ],
-        modelTier: 'conversational',
-        temperature: 0,
-        max_tokens: 4,
-      });
-    } catch (err) {
-      console.warn('[warmup] executor prefix warmup failed (non-fatal):', err?.message || err);
-    }
-  });
+  return Promise.resolve();
 }

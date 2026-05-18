@@ -796,6 +796,33 @@ export async function captureTurnEval({
 
 const QUIT_SIGNAL_REGEX = /\b(?:let'?s end|let'?s stop|i\s+(?:quit|am\s+done|'?m\s+done)|end\s+(?:the|this)\s+interview|stop\s+(?:the|this)\s+interview)\b/i;
 
+/**
+ * Wall-clock elapsed minus accumulated pause time (ms).
+ * @param {import('mongoose').Document | Record<string, unknown>} interview
+ */
+export function computeEffectiveElapsedMinutes(interview) {
+  const startTs = interview?.session_started_at
+    ? new Date(interview.session_started_at).getTime()
+    : 0;
+  if (!startTs || Number.isNaN(startTs)) return 0;
+  const ss = interview?.session_state || {};
+  const totalPaused = Number(ss.total_paused_ms) || 0;
+  const pausedAt = ss.paused_at_ms;
+  const activePause =
+    pausedAt != null && Number.isFinite(Number(pausedAt))
+      ? Math.max(0, Date.now() - Number(pausedAt))
+      : 0;
+  return Math.max(0, (Date.now() - startTs - totalPaused - activePause) / 60000);
+}
+
+function minCloseMinutes(interview, config) {
+  const targetMin =
+    Number(interview?.target_duration_minutes) > 0
+      ? Number(interview.target_duration_minutes)
+      : computeTotalMinutes(config) || 45;
+  return Math.max(30, targetMin * 0.9);
+}
+
 function buildPhaseTopicIndex(config) {
   const root = mapConfigForPrompt(config);
   const phases = Array.isArray(root?.interview_structure?.phases) ? root.interview_structure.phases : [];
@@ -850,8 +877,9 @@ export function applyEvalToSessionState(interview, captured, { config, candidate
   ss.candidate_progress = ensureCandidateProgressShape(ss.candidate_progress, config);
 
   const totalMin = computeTotalMinutes(config);
-  const startTs = interview?.session_started_at ? new Date(interview.session_started_at).getTime() : 0;
-  const elapsed = startTs ? Math.max(0, (Date.now() - startTs) / 60000) : 0;
+  const elapsed = computeEffectiveElapsedMinutes(interview);
+  const minCloseMin = minCloseMinutes(interview, config);
+  let closeBlockedReason = null;
 
   if (QUIT_SIGNAL_REGEX.test(candidateMessage)) {
     captured.move = 'CLOSE';
@@ -859,8 +887,12 @@ export function applyEvalToSessionState(interview, captured, { config, candidate
     captured.recommended_focus = '';
     captured.interview_done = true;
   }
-  if (captured.move === 'CLOSE' && elapsed < 45) {
-    captured.move = 'TRANSITION';
+  const wantsClose = captured.move === 'CLOSE' || captured.interview_done === true;
+  if (wantsClose && elapsed < minCloseMin) {
+    closeBlockedReason = 'before_min_duration';
+    if (captured.move === 'CLOSE') {
+      captured.move = 'TRANSITION';
+    }
     captured.interview_done = false;
   }
 
@@ -957,7 +989,14 @@ export function applyEvalToSessionState(interview, captured, { config, candidate
     reasoning_trace: captured.reasoning_trace,
   };
 
-  ss.interview_done = captured.interview_done === true || captured.move === 'CLOSE';
+  const shouldCloseNow =
+    captured.interview_done === true || captured.move === 'CLOSE';
+  if (shouldCloseNow) {
+    ss.pending_close = true;
+    ss.interview_done = false;
+  } else {
+    ss.pending_close = false;
+  }
   ss.raw_planner_outputs.push({
     turn_index: candidateTurnIndex,
     at: new Date(),
@@ -975,37 +1014,17 @@ export function applyEvalToSessionState(interview, captured, { config, candidate
     elapsed_min: captured.time_management?.elapsed_min ?? Number(elapsed.toFixed(1)),
     remaining_min: captured.time_management?.remaining_min ?? Math.max(0, totalMin - elapsed),
     should_transition_soon: captured.time_management?.should_transition_soon === true,
-    interview_done: ss.interview_done,
+    interview_done: shouldCloseNow,
+    close_blocked_reason: closeBlockedReason,
     at: new Date(),
   });
   if (ss.eval_history.length > 120) ss.eval_history = ss.eval_history.slice(-120);
   ss.last_eval_at = new Date();
-  return { interviewDone: ss.interview_done };
+  return { interviewDone: shouldCloseNow, pendingClose: Boolean(ss.pending_close) };
 }
 
 export function warmPlannerPrefix({ config, interview }) {
-  return Promise.resolve().then(async () => {
-    try {
-      const { system } = buildPrompt({
-        config,
-        interview: interview || {},
-        sessionState: interview?.session_state || {},
-        candidateMessage: '',
-        interviewerReply: '',
-      });
-      await invokeLLM({
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: '.' },
-        ],
-        modelTier: 'eval',
-        temperature: 0,
-        max_tokens: 4,
-      });
-    } catch (err) {
-      console.warn('[warmup] planner prefix warmup failed (non-fatal):', err?.message || err);
-    }
-  });
+  return Promise.resolve();
 }
 
 export { SCHEMA, MOVES, buildPrompt, normalizeResult, sectionWindowedTurns, formatTranscriptBlock };

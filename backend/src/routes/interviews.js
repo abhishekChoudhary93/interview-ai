@@ -19,7 +19,8 @@ import { recordSessionEndMetadata } from '../services/interviewDebriefContext.js
 import { resolveTargetLevel, isValidTargetLevel } from '../config/targetLevels.js';
 import { loadUserAndEntitlements } from '../services/entitlementsService.js';
 import { redactInterviewForReport } from '../services/reportRedaction.js';
-import { incrementStartedInterviews } from '../services/usageService.js';
+import { getPlanConfig } from '../config/plans.js';
+import { tryConsumeInterviewSlot, rollbackInterviewSlot } from '../services/usageService.js';
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -210,12 +211,26 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const { entitlements } = await loadUserAndEntitlements(req.userId);
+    const { user, entitlements } = await loadUserAndEntitlements(req.userId);
     if (!entitlements?.canStartInterview) {
       return res.status(402).json({
         code: 'QUOTA_EXCEEDED',
         error: 'Monthly interview limit reached. Upgrade your plan to continue.',
         entitlements,
+      });
+    }
+
+    const planConfig = getPlanConfig(entitlements.effectivePlan);
+    const consumed = await tryConsumeInterviewSlot(
+      userObjectId.toString(),
+      planConfig.monthlyInterviewLimit
+    );
+    if (!consumed.ok) {
+      const refreshed = await loadUserAndEntitlements(req.userId);
+      return res.status(402).json({
+        code: 'QUOTA_EXCEEDED',
+        error: 'Monthly interview limit reached. Upgrade your plan to continue.',
+        entitlements: refreshed.entitlements,
       });
     }
 
@@ -232,28 +247,32 @@ router.post('/', async (req, res) => {
       })[targetLevel] ||
       '';
 
-    const row = await Interview.create({
-      userId: userObjectId,
-      clientId,
-      status: body.status || 'in_progress',
-      created_date: body.created_date || toIso(),
-      role_title: body.role_title,
-      role_track: body.role_track,
-      company: body.company,
-      experience_level: body.experience_level || legacyExperienceLevel,
-      years_experience_band: body.years_experience_band || undefined,
-      target_level: targetLevel,
-      interview_type: 'system_design',
-      industry: body.industry || '',
-      interview_mode: body.interview_mode ?? 'chat',
-      duration_seconds: body.duration_seconds,
-      template_id: INTERVIEW_CONFIG_ID,
-      template_version: 'v3',
-      selected_template_id: INTERVIEW_CONFIG_ID,
-    });
-    
-    await incrementStartedInterviews(userObjectId.toString());
-    
+    let row;
+    try {
+      row = await Interview.create({
+        userId: userObjectId,
+        clientId,
+        status: body.status || 'in_progress',
+        created_date: body.created_date || toIso(),
+        role_title: body.role_title,
+        role_track: body.role_track,
+        company: body.company,
+        experience_level: body.experience_level || legacyExperienceLevel,
+        years_experience_band: body.years_experience_band || undefined,
+        target_level: targetLevel,
+        interview_type: 'system_design',
+        industry: body.industry || '',
+        interview_mode: body.interview_mode ?? 'chat',
+        duration_seconds: body.duration_seconds,
+        template_id: INTERVIEW_CONFIG_ID,
+        template_version: 'v3',
+        selected_template_id: INTERVIEW_CONFIG_ID,
+      });
+    } catch (createErr) {
+      await rollbackInterviewSlot(userObjectId.toString());
+      throw createErr;
+    }
+
     return res.status(201).json(serializeInterviewDoc(row));
   } catch (e) {
     console.error(e);
@@ -382,13 +401,6 @@ router.post('/:clientId/session/turn', async (req, res) => {
         console.warn('[session/turn] foreground planner eval failed:', err);
       }
 
-      // Hard turn-cap could have flipped interview_done synchronously inside
-      // the foreground eval (HARD_TURN_CAP=60). If so, bail with a 409 before
-      // streaming — there's no Executor reply to give.
-      if (doc.session_state?.interview_done) {
-        await doc.save();
-        return res.status(409).json({ error: 'Interview already complete' });
-      }
     }
 
     openSseStream(res);
@@ -457,9 +469,17 @@ router.post('/:clientId/session/turn', async (req, res) => {
       });
     }
 
+    if (doc.session_state?.pending_close) {
+      doc.session_state.interview_done = true;
+      doc.session_state.pending_close = false;
+    }
+
     await doc.save();
 
-    writeSseEvent(res, 'done', { interviewer_message: finalReply });
+    writeSseEvent(res, 'done', {
+      interviewer_message: finalReply,
+      interview_done: Boolean(doc.session_state?.interview_done),
+    });
 
     // End the SSE stream NOW so the user's UI unblocks immediately.
     res.end();
@@ -681,6 +701,36 @@ router.patch('/:clientId', async (req, res) => {
     delete patch.id;
     delete patch.clientId;
     delete patch.userId;
+
+    if (patch.status === 'abandoned') {
+      return res.status(400).json({
+        error: 'Abandoning interviews is not supported. Pause the session or use End & report.',
+      });
+    }
+
+    const prevStatus = doc.status;
+    const nextStatus = patch.status;
+
+    if (nextStatus === 'paused' && prevStatus !== 'paused') {
+      if (!doc.session_state) doc.session_state = {};
+      doc.session_state.paused_at_ms = Date.now();
+      doc.markModified('session_state');
+      delete patch.session_state;
+    }
+
+    if (nextStatus === 'in_progress' && prevStatus === 'paused') {
+      if (!doc.session_state) doc.session_state = {};
+      const pausedAt = doc.session_state.paused_at_ms;
+      if (pausedAt != null && Number.isFinite(Number(pausedAt))) {
+        const delta = Math.max(0, Date.now() - Number(pausedAt));
+        doc.session_state.total_paused_ms =
+          (Number(doc.session_state.total_paused_ms) || 0) + delta;
+      }
+      doc.session_state.paused_at_ms = null;
+      doc.markModified('session_state');
+      delete patch.session_state;
+    }
+
     Object.assign(doc, patch);
     // Mongoose `Mixed` types do not auto-detect changes from
     // Object.assign — without an explicit markModified, save() silently

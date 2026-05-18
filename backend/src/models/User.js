@@ -23,8 +23,15 @@ const subscriptionSchema = new mongoose.Schema(
 
 const usageSchema = new mongoose.Schema(
   {
+    /** @deprecated legacy calendar month key */
     periodKey: { type: String },
+    /** @deprecated legacy field — reads migrate to interviewsUsed */
     completedInterviews: { type: Number, default: 0 },
+    /** @deprecated legacy field */
+    startedInterviews: { type: Number },
+    quotaPeriodStart: { type: Date },
+    quotaPeriodEnd: { type: Date },
+    interviewsUsed: { type: Number, default: 0 },
   },
   { _id: false }
 );
@@ -34,9 +41,6 @@ const userSchema = new mongoose.Schema(
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true },
     fullName: { type: String, required: true, trim: true },
-    /** v2 LEGACY: rotation history for the multi-template resolver, retained
-     *  on the schema so old user docs do not lose data. v3 single-problem
-     *  engine no longer writes here. */
     recent_templates: { type: [recentTemplateSchema], default: [] },
     subscription: { type: subscriptionSchema, default: () => ({}) },
     usage: { type: usageSchema, default: () => ({}) },
@@ -44,7 +48,7 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-/** Current UTC calendar month key for usage quotas. */
+/** @deprecated UTC calendar month — prefer quotaPeriodStart/End */
 export function currentUsagePeriodKey(date = new Date()) {
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, '0');
@@ -52,9 +56,16 @@ export function currentUsagePeriodKey(date = new Date()) {
 }
 
 export function defaultSubscriptionFields() {
+  const now = new Date();
+  const end = new Date(now);
+  end.setUTCDate(end.getUTCDate() + 30);
   return {
     subscription: { plan: 'starter', status: 'active' },
-    usage: { periodKey: currentUsagePeriodKey(), completedInterviews: 0 },
+    usage: {
+      quotaPeriodStart: now,
+      quotaPeriodEnd: end,
+      interviewsUsed: 0,
+    },
   };
 }
 

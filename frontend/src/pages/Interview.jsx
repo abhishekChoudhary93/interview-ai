@@ -18,6 +18,8 @@ import { useInterviewerVoice } from '@/hooks/useInterviewerVoice';
 import InterviewHeader from '@/components/interview/InterviewHeader';
 import VideoStage from '@/components/interview/VideoStage';
 import DesignCanvas from '@/components/interview/DesignCanvas';
+import { getProblemFromConfig, getProblemTitle } from '@/lib/interviewConfig';
+import { useSubscription } from '@/lib/SubscriptionContext';
 
 /**
  * Build the conversation list shown in the chat thread from the canonical
@@ -60,7 +62,10 @@ export default function Interview() {
   const [camOn, setCamOn] = useState(true);
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
 
-  const [confirmKind, setConfirmKind] = useState(null); // 'pause' | 'abandon' | 'end'
+  const [confirmKind, setConfirmKind] = useState(null); // 'pause' | 'end'
+  const [isPausedView, setIsPausedView] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
+  const { refresh: refreshSubscription } = useSubscription();
 
   const sessionStartedRef = useRef(false);
   const abortRef = useRef(null);
@@ -86,47 +91,33 @@ export default function Interview() {
   const mode = interview?.interview_mode || 'chat';
   const useVoiceOut = mode !== 'chat' && !voiceMuted;
   const voice = useInterviewerVoice({ enabled: useVoiceOut });
-
-  /* ---------- bootstrap: load interview + start session ---------- */
-
+  const voiceRef = useRef(voice);
   useEffect(() => {
-    if (!interviewId) {
-      navigate('/setup');
-      return undefined;
-    }
-    let cancelled = false;
-    sessionStartedRef.current = false;
+    voiceRef.current = voice;
+  }, [voice]);
 
-    (async () => {
+  const lastInterviewIdRef = useRef(null);
+
+  const startSessionForRow = useCallback(
+    async (row, { cancelledRef }) => {
+      if (!row.template_id) {
+        navigate('/setup?legacy=1');
+        return;
+      }
+      if (sessionStartedRef.current) return;
+      sessionStartedRef.current = true;
+
       try {
-        let row = await getInterview(interviewId);
-        if (cancelled) return;
-        if (row.status === 'paused') {
-          try {
-            await updateInterview(interviewId, { status: 'in_progress' });
-            row = await getInterview(interviewId);
-          } catch {
-            /* keep paused row */
-          }
-        }
-        if (cancelled) return;
-        setInterview(row);
-        setMessages(turnsToMessages(row.conversation_turns));
-
-        if (!row.template_id) {
-          // Old, pre-template rows are no longer supported in the new flow.
-          // Send the user back to setup with a helpful URL flag.
-          navigate('/setup?legacy=1');
+        if (cancelledRef?.current) {
+          sessionStartedRef.current = false;
           return;
         }
-        if (sessionStartedRef.current) return;
-        sessionStartedRef.current = true;
 
         const session = await startInterviewSession(interviewId);
-        if (cancelled) return;
+        if (cancelledRef?.current) return;
 
         const fresh = await getInterview(interviewId);
-        if (cancelled) return;
+        if (cancelledRef?.current) return;
         setInterview(fresh);
         setInterviewConfig(
           session.interview_config ||
@@ -137,21 +128,63 @@ export default function Interview() {
         );
         setMessages(turnsToMessages(fresh.conversation_turns));
 
-        if (mode !== 'chat' && session.interviewer_message) {
-          // Speak the opening line immediately so the candidate hears it.
-          voice.feedTokens(session.interviewer_message);
-          voice.flushPending();
+        const rowMode = fresh.interview_mode || 'chat';
+        if (rowMode !== 'chat' && session.interviewer_message) {
+          voiceRef.current.feedTokens(session.interviewer_message);
+          voiceRef.current.flushPending();
         }
+      } catch (err) {
+        sessionStartedRef.current = false;
+        throw err;
+      }
+    },
+    [interviewId, navigate]
+  );
+
+  /* ---------- bootstrap: load interview + start session ---------- */
+
+  useEffect(() => {
+    if (!interviewId) {
+      navigate('/setup');
+      return undefined;
+    }
+    const cancelledRef = { current: false };
+    if (lastInterviewIdRef.current !== interviewId) {
+      sessionStartedRef.current = false;
+      lastInterviewIdRef.current = interviewId;
+    }
+
+    (async () => {
+      try {
+        const row = await getInterview(interviewId);
+        if (cancelledRef.current) return;
+
+        if (!row.template_id) {
+          navigate('/setup?legacy=1');
+          return;
+        }
+
+        setInterview(row);
+        setMessages(turnsToMessages(row.conversation_turns));
+        setInterviewConfig(row.interview_config || row.execution_plan || null);
+
+        if (row.status === 'paused') {
+          setIsPausedView(true);
+          setIsPreparing(false);
+          return;
+        }
+
+        await startSessionForRow(row, { cancelledRef });
       } catch (e) {
         console.error(e);
-        if (!cancelled) navigate('/dashboard');
+        if (!cancelledRef.current) navigate('/dashboard');
       } finally {
-        if (!cancelled) setIsPreparing(false);
+        if (!cancelledRef.current) setIsPreparing(false);
       }
     })();
 
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
       if (abortRef.current) {
         try {
           abortRef.current.abort();
@@ -160,9 +193,68 @@ export default function Interview() {
         }
       }
       clearInterviewDonePoll();
-      voice.cancel();
+      voiceRef.current.cancel();
     };
-  }, [interviewId, navigate, clearInterviewDonePoll]);
+  }, [interviewId, navigate, clearInterviewDonePoll, startSessionForRow]);
+
+  const handleResumePaused = useCallback(async () => {
+    setIsResuming(true);
+    try {
+      const row = await updateInterview(interviewId, { status: 'in_progress' });
+      setInterview(row);
+      setIsPausedView(false);
+      setIsPreparing(true);
+      sessionStartedRef.current = false;
+      await startSessionForRow(row, { cancelledRef: { current: false } });
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsResuming(false);
+      setIsPreparing(false);
+    }
+  }, [interviewId, startSessionForRow]);
+
+  /* ---------- end / pause ---------- */
+
+  const finalizeAndNavigate = useCallback(async () => {
+    setIsWrappingUp(true);
+    try {
+      try {
+        await getInterviewSessionState(interviewId);
+      } catch {
+        /* non-fatal */
+      }
+      await interviewSessionComplete(interviewId);
+      await refreshSubscription();
+      navigate(`/report?id=${interviewId}`);
+    } catch (e) {
+      console.error(e);
+      setIsWrappingUp(false);
+    }
+  }, [interviewId, navigate, refreshSubscription]);
+
+  const scheduleInterviewDonePoll = useCallback(() => {
+    const delays = [1000, 2000, 4000];
+    let attempt = 0;
+    const poll = async () => {
+      if (attempt >= delays.length) return;
+      interviewDonePollRef.current = setTimeout(async () => {
+        interviewDonePollRef.current = null;
+        try {
+          const snap = await getInterviewSessionState(interviewId);
+          if (snap?.session_state?.interview_done) {
+            void finalizeAndNavigate();
+            return;
+          }
+        } catch (err) {
+          console.warn('[interview_done poll] failed:', err);
+        }
+        attempt += 1;
+        poll();
+      }, delays[attempt]);
+    };
+    poll();
+  }, [interviewId, finalizeAndNavigate]);
 
   /* ---------- send a turn ---------- */
 
@@ -195,7 +287,7 @@ export default function Interview() {
       setIsStreaming(true);
       setPendingCandidate({ content: text, kind: 'answer' });
       setStreamingInterviewer(''); // typing dots until first token
-      voice.cancel();
+      voiceRef.current.cancel();
 
       // Flush any in-flight canvas autosave so the backend reads fresh
       // canvas_text. No-op when the canvas isn't mounted (non-system-design)
@@ -224,9 +316,9 @@ export default function Interview() {
           onToken: (delta) => {
             assembled += delta;
             setStreamingInterviewer(assembled);
-            if (useVoiceOut) voice.feedTokens(delta);
+            if (useVoiceOut) voiceRef.current.feedTokens(delta);
           },
-          onDone: ({ interviewer_message }) => {
+          onDone: ({ interviewer_message, interview_done: doneFlag }) => {
             const finalText = (interviewer_message || assembled || '').trim();
             setMessages((prev) => [
               ...prev,
@@ -234,25 +326,13 @@ export default function Interview() {
             ]);
             setStreamingInterviewer(null);
             setIsStreaming(false);
-            if (useVoiceOut) voice.flushPending();
+            if (useVoiceOut) voiceRef.current.flushPending();
 
-            // The backend Planner eval is fire-and-forget after res.end(),
-            // so an inline interview_done flag is no longer streamed back.
-            // Poll /session/state once after a window long enough for a
-            // typical eval to land (~1-3s). If the Planner declared the
-            // interview complete on this turn, auto-navigate to the report.
-            interviewDonePollRef.current = setTimeout(async () => {
-              interviewDonePollRef.current = null;
-              try {
-                const snap = await getInterviewSessionState(interviewId);
-                if (snap?.session_state?.interview_done) {
-                  void finalizeAndNavigate();
-                }
-              } catch (err) {
-                // Non-fatal — the user can still End & report manually.
-                console.warn('[interview_done poll] failed:', err);
-              }
-            }, 3000);
+            if (doneFlag) {
+              void finalizeAndNavigate();
+            } else {
+              scheduleInterviewDonePoll();
+            }
           },
           // Backend no longer emits an inline `state` SSE event (Planner
           // eval runs after res.end()). Kept as a no-op so a future
@@ -266,10 +346,11 @@ export default function Interview() {
           },
         });
       } catch (e) {
+        if (e?.status === 409) {
+          void finalizeAndNavigate();
+          return;
+        }
         if (controller.signal.aborted) {
-          // User-initiated abort — clean state silently. pendingCandidate
-          // also has to clear here, otherwise the abandoned candidate bubble
-          // hangs around above an empty composer.
           setStreamingInterviewer(null);
           setIsStreaming(false);
           setPendingCandidate(null);
@@ -293,6 +374,8 @@ export default function Interview() {
       useVoiceOut,
       clearInterviewDonePoll,
       failTurnWithMessage,
+      finalizeAndNavigate,
+      scheduleInterviewDonePoll,
     ]
   );
 
@@ -305,8 +388,8 @@ export default function Interview() {
       }
     }
     clearInterviewDonePoll();
-    voice.cancel();
-  }, [voice, clearInterviewDonePoll]);
+    voiceRef.current.cancel();
+  }, [clearInterviewDonePoll]);
 
   /**
    * Persist the design canvas. Both the raw Excalidraw scene (for rehydration
@@ -328,37 +411,13 @@ export default function Interview() {
   const isSystemDesign =
     String(interview?.interview_type || '').toLowerCase() === 'system_design';
 
-  /* ---------- end / pause / abandon ---------- */
-
-  const finalizeAndNavigate = useCallback(async () => {
-    setIsWrappingUp(true);
-    try {
-      // Make sure the latest eval has landed before completing.
-      try {
-        await getInterviewSessionState(interviewId);
-      } catch {
-        /* non-fatal */
-      }
-      await interviewSessionComplete(interviewId);
-      navigate(`/report?id=${interviewId}`);
-    } catch (e) {
-      console.error(e);
-      setIsWrappingUp(false);
-    }
-  }, [interviewId, navigate]);
+  /* ---------- end / pause ---------- */
 
   const onConfirmAction = useCallback(async () => {
-    voice.cancel();
+    voiceRef.current.cancel();
     if (confirmKind === 'pause') {
       try {
         await updateInterview(interviewId, { status: 'paused' });
-        navigate('/dashboard');
-      } finally {
-        setConfirmKind(null);
-      }
-    } else if (confirmKind === 'abandon') {
-      try {
-        await updateInterview(interviewId, { status: 'abandoned' });
         navigate('/dashboard');
       } finally {
         setConfirmKind(null);
@@ -369,7 +428,7 @@ export default function Interview() {
       await finalizeAndNavigate();
       setIsEndingSession(false);
     }
-  }, [confirmKind, finalizeAndNavigate, interviewId, navigate, voice]);
+  }, [confirmKind, finalizeAndNavigate, interviewId, navigate]);
 
   const candidateTurnCount = useMemo(
     () => messages.filter((m) => m.role === 'candidate').length,
@@ -377,8 +436,11 @@ export default function Interview() {
   );
   const canEndEarly = candidateTurnCount >= 1;
 
-  const problem = interviewConfig?.problem || interviewConfig?.primary_question || null;
-  const problemTitle = problem?.title || (typeof problem === 'string' ? problem : null);
+  const problem = getProblemFromConfig(interviewConfig);
+  const problemTitle =
+    getProblemTitle(interviewConfig) ||
+    interview?.template_id?.replace(/_/g, ' ') ||
+    'System design interview';
 
   /* ---------- render ---------- */
 
@@ -393,6 +455,49 @@ export default function Interview() {
     );
   }
 
+  if (isPausedView) {
+    return (
+      <div className="min-h-screen flex flex-col bg-background">
+        <InterviewHeader
+          interview={interview}
+          problemTitle={problemTitle}
+          onPause={() => {}}
+          onEndAndReport={() => setConfirmKind('end')}
+          isProcessing={false}
+          isEndingSession={isEndingSession}
+          canEndEarly={canEndEarly}
+        />
+        <div className="flex-1 flex items-center justify-center px-4">
+          <div className="text-center max-w-md space-y-4">
+            <p className="text-lg font-semibold text-foreground">Interview paused</p>
+            <p className="text-sm text-muted-foreground">
+              Your progress and timer are saved. Resume when you are ready to continue.
+            </p>
+            <button
+              type="button"
+              onClick={() => void handleResumePaused()}
+              disabled={isResuming}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-accent text-accent-foreground px-6 py-2.5 text-sm font-semibold hover:bg-accent/90 disabled:opacity-60"
+            >
+              {isResuming ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+              Resume interview
+            </button>
+          </div>
+        </div>
+        <SessionDialog
+          open={confirmKind === 'end'}
+          onOpenChange={(open) => !open && setConfirmKind(null)}
+          title="End now and generate the report?"
+          description="We'll grade everything you've answered so far and take you to your scored report."
+          confirmLabel="End & report"
+          onConfirm={() => void onConfirmAction()}
+          loading={isEndingSession}
+        />
+        <WrappingUpDialog open={isWrappingUp} />
+      </div>
+    );
+  }
+
   const confirmCopy = (() => {
     if (confirmKind === 'pause') {
       return {
@@ -400,14 +505,6 @@ export default function Interview() {
         description: 'Your progress is saved. You can resume later from the dashboard.',
         confirm: 'Pause',
         variant: 'default',
-      };
-    }
-    if (confirmKind === 'abandon') {
-      return {
-        title: 'Exit and abandon this interview?',
-        description: 'The session will be marked abandoned and won’t be scored.',
-        confirm: 'Abandon',
-        variant: 'destructive',
       };
     }
     if (confirmKind === 'end') {
@@ -437,8 +534,8 @@ export default function Interview() {
       ) : null}
       <InterviewHeader
         interview={interview}
+        problemTitle={problemTitle}
         onPause={() => setConfirmKind('pause')}
-        onAbandon={() => setConfirmKind('abandon')}
         onEndAndReport={() => setConfirmKind('end')}
         isProcessing={isProcessing}
         isEndingSession={isEndingSession}
@@ -449,7 +546,7 @@ export default function Interview() {
         onVoiceChange={voice.setVoiceName}
         voiceMuted={voiceMuted}
         onToggleVoiceMute={() => {
-          if (!voiceMuted) voice.cancel();
+          if (!voiceMuted) voiceRef.current.cancel();
           setVoiceMuted((v) => !v);
         }}
       />
@@ -467,26 +564,6 @@ export default function Interview() {
                 animate={{ opacity: 1 }}
                 className="flex-1 min-w-0 min-h-0 flex flex-col border-r border-border/40"
               >
-                {problem && (
-                  <div className="bg-muted/30 border-b border-border/40 px-4 py-3 flex flex-col max-h-48 overflow-y-auto">
-                    {typeof problem === 'string' ? (
-                      <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">{problem}</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {problem.title && (
-                          <h2 className="text-sm font-semibold text-foreground">
-                            {problem.title}
-                          </h2>
-                        )}
-                        {problem.brief && (
-                          <p className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
-                            {problem.brief}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
                 <VideoStage
                   mode={mode}
                   isInterviewerSpeaking={voice.isSpeaking}
@@ -529,26 +606,6 @@ export default function Interview() {
             animate={{ opacity: 1 }}
             className="flex-1 min-w-0 flex flex-col"
           >
-            {problem && (
-              <div className="bg-muted/30 border-b border-border/40 px-4 py-3 flex flex-col max-h-48 overflow-y-auto">
-                {typeof problem === 'string' ? (
-                  <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">{problem}</p>
-                ) : (
-                  <div className="space-y-2">
-                    {problem.title && (
-                      <h2 className="text-sm font-semibold text-foreground">
-                        {problem.title}
-                      </h2>
-                    )}
-                    {problem.brief && (
-                      <p className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
-                        {problem.brief}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
             <VideoStage
               mode={mode}
               isInterviewerSpeaking={voice.isSpeaking}

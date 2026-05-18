@@ -4,6 +4,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { config } from '../config.js';
 import { User, defaultSubscriptionFields } from '../models/User.js';
 import { getEntitlementsForUser } from '../services/entitlementsService.js';
+import { resetUsageForNewSubscriptionPeriod } from '../services/usageService.js';
 import { isRazorpayConfigured } from '../services/razorpayService.js';
 
 const router = express.Router();
@@ -26,8 +27,9 @@ function subscriptionPayload(user, entitlements) {
       lastPaymentAt: sub.lastPaymentAt ?? null,
     },
     usage: {
-      periodKey: user.usage?.periodKey ?? null,
-      completedInterviews: user.usage?.completedInterviews ?? 0,
+      interviewsUsed: user.usage?.interviewsUsed ?? user.usage?.startedInterviews ?? user.usage?.completedInterviews ?? 0,
+      quotaPeriodStart: user.usage?.quotaPeriodStart ?? null,
+      quotaPeriodEnd: user.usage?.quotaPeriodEnd ?? null,
     },
     entitlements,
     razorpayConfigured: isRazorpayConfigured(),
@@ -89,6 +91,7 @@ router.post('/dev/set-plan', async (req, res) => {
       end.setUTCDate(end.getUTCDate() + days);
       user.subscription.currentPeriodEnd = end;
       user.subscription.lastPaymentAt = now;
+      resetUsageForNewSubscriptionPeriod(user, { periodStart: now, periodEnd: end });
     }
     user.markModified('subscription');
     await user.save();

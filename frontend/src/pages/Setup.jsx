@@ -390,6 +390,20 @@ export default function Setup() {
             >
               Continue <ArrowRight className="w-4 h-4" />
             </Button>
+          ) : entitlements && !entitlements.canStartInterview ? (
+            <div className="flex flex-col items-end gap-2">
+              <p className="text-xs text-muted-foreground text-right max-w-xs">
+                You have used all interviews in this billing period.
+                {entitlements.quotaResetsAt
+                  ? ` Resets ${new Date(entitlements.quotaResetsAt).toLocaleDateString()}.`
+                  : null}
+              </p>
+              <Link to="/billing">
+                <Button className="bg-accent hover:bg-accent/90 text-accent-foreground h-12 px-8 rounded-xl font-semibold">
+                  Upgrade plan
+                </Button>
+              </Link>
+            </div>
           ) : (
             <Button
               type="button"

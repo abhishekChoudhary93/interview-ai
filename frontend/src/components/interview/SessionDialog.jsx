@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Loader2 } from 'lucide-react';
 
 /**
- * Single confirmation dialog used for pause / abandon / end-and-report.
+ * Single confirmation dialog used for pause / end-and-report.
  * Distinct from the WrappingUp interstitial which is a non-interactive modal.
  */
 export default function SessionDialog({

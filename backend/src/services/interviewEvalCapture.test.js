@@ -202,3 +202,35 @@ test('next buildPrompt runtime_state uses YAML-derived persisted state from prio
   assert.match(user, /current_subtopic:\s+collision_probability/);
   assert.match(user, /momentum:\s+driving/);
 });
+
+test('applyEvalToSessionState sets pending_close instead of interview_done when closing', () => {
+  const config = loadInterviewConfig();
+  const started = new Date(Date.now() - 50 * 60 * 1000);
+  const interview = makeInterview({
+    session_started_at: started,
+    target_duration_minutes: 50,
+  });
+  const { pendingClose } = applyEvalToSessionState(
+    interview,
+    normalizeResult({ m: 'CLOSE', f: 'Thanks for your time today.', done: true }),
+    { config, candidateTurnIndex: 10, candidateMessage: 'That covers it.' }
+  );
+  assert.equal(pendingClose, true);
+  assert.equal(interview.session_state.pending_close, true);
+  assert.equal(interview.session_state.interview_done, false);
+});
+
+test('applyEvalToSessionState blocks CLOSE before minimum duration', () => {
+  const config = loadInterviewConfig();
+  const interview = makeInterview({
+    session_started_at: new Date(),
+    target_duration_minutes: 50,
+  });
+  applyEvalToSessionState(
+    interview,
+    normalizeResult({ m: 'CLOSE', f: 'Wrapping up.', done: true }),
+    { config, candidateTurnIndex: 2, candidateMessage: 'Done.' }
+  );
+  assert.equal(interview.session_state.pending_close, false);
+  assert.equal(interview.session_state.eval_history.at(-1).close_blocked_reason, 'before_min_duration');
+});

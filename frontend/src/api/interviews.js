@@ -97,7 +97,9 @@ export async function streamInterviewSessionTurn(clientId, candidate_message, ha
       /* ignore */
     }
     handlers.onError?.(message);
-    throw new Error(message);
+    const err = new Error(message);
+    err.status = res.status;
+    throw err;
   }
 
   const reader = res.body.getReader();

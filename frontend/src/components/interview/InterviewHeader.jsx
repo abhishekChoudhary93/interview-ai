@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import {
-  X,
   MessageSquare,
   Mic,
   Video,
@@ -31,17 +30,28 @@ function ModeBadge({ mode }) {
   );
 }
 
-function ElapsedClock({ startedAt }) {
+function effectiveElapsedMs(startedAt, totalPausedMs = 0, pausedAtMs = null) {
+  if (!startedAt) return 0;
+  const start = new Date(startedAt).getTime();
+  if (Number.isNaN(start)) return 0;
+  const pausedAccum = Number(totalPausedMs) || 0;
+  const activePause =
+    pausedAtMs != null && Number.isFinite(Number(pausedAtMs))
+      ? Math.max(0, Date.now() - Number(pausedAtMs))
+      : 0;
+  return Math.max(0, Date.now() - start - pausedAccum - activePause);
+}
+
+function ElapsedClock({ startedAt, totalPausedMs = 0, pausedAtMs = null }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
     if (!startedAt) return undefined;
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
-  }, [startedAt]);
+  }, [startedAt, totalPausedMs, pausedAtMs]);
   void tick;
   if (!startedAt) return null;
-  const ms = Date.now() - new Date(startedAt).getTime();
-  const total = Math.max(0, Math.floor(ms / 1000));
+  const total = Math.max(0, Math.floor(effectiveElapsedMs(startedAt, totalPausedMs, pausedAtMs) / 1000));
   const m = Math.floor(total / 60);
   const s = String(total % 60).padStart(2, '0');
   return (
@@ -53,8 +63,8 @@ function ElapsedClock({ startedAt }) {
 
 export default function InterviewHeader({
   interview,
+  problemTitle,
   onPause,
-  onAbandon,
   onEndAndReport,
   isProcessing,
   isEndingSession,
@@ -67,18 +77,35 @@ export default function InterviewHeader({
   showVoiceControls = false,
 }) {
   const mode = interview.interview_mode || 'chat';
+  const sessionState = interview.session_state || {};
+  const totalPausedMs = sessionState.total_paused_ms ?? 0;
+  const pausedAtMs = sessionState.paused_at_ms ?? null;
 
   return (
     <div className="sticky top-0 z-10 border-b border-border/50 bg-background/85 backdrop-blur-xl">
       <div className="mx-auto w-full max-w-7xl px-4 py-3 flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="text-sm text-foreground font-medium truncate">
+          {problemTitle ? (
+            <p className="text-sm text-foreground font-semibold truncate">{problemTitle}</p>
+          ) : null}
+          <p
+            className={cn(
+              'truncate',
+              problemTitle
+                ? 'text-xs text-muted-foreground mt-0.5'
+                : 'text-sm text-foreground font-medium'
+            )}
+          >
             {interview.role_title}
-            {interview.company ? <span className="text-muted-foreground"> · {interview.company}</span> : null}
+            {interview.company ? <span> · {interview.company}</span> : null}
           </p>
           <div className="flex items-center gap-2 mt-1 flex-wrap">
             <ModeBadge mode={mode} />
-            <ElapsedClock startedAt={interview.session_started_at} />
+            <ElapsedClock
+              startedAt={interview.session_started_at}
+              totalPausedMs={totalPausedMs}
+              pausedAtMs={pausedAtMs}
+            />
           </div>
         </div>
 
@@ -119,7 +146,7 @@ export default function InterviewHeader({
               size="sm"
               onClick={onEndAndReport}
               disabled={isProcessing || isEndingSession || !canEndEarly}
-              className="rounded-xl gap-1.5 border-border text-foreground hover:bg-muted/60"
+              className="rounded-xl gap-1.5 border-border text-foreground hover:bg-accent hover:text-accent-foreground hover:border-accent"
               title={
                 canEndEarly
                   ? 'Finish now and open your scored report'
@@ -149,18 +176,6 @@ export default function InterviewHeader({
               <span className="hidden sm:inline text-xs font-medium">Pause</span>
             </Button>
           )}
-
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={onAbandon}
-            disabled={isEndingSession}
-            className="rounded-xl"
-            title="Exit and abandon"
-          >
-            <X className="w-5 h-5" />
-          </Button>
         </div>
       </div>
     </div>

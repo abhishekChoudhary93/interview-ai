@@ -2,12 +2,10 @@ import { loadInterviewConfig, INTERVIEW_CONFIG_ID } from './interviewConfig.js';
 import {
   streamInterviewerReply,
   generateOpeningLine,
-  warmExecutorPrefix,
 } from './interviewConverse.js';
 import {
   captureTurnEval,
   applyEvalToSessionState,
-  warmPlannerPrefix,
 } from './interviewEvalCapture.js';
 
 /**
@@ -154,13 +152,6 @@ export async function startInterviewSession(interview) {
   interview.markModified('interview_config');
   await interview.save();
 
-  // Eagerly warm both LLM caches in parallel while the candidate is reading
-  // the opening message. Both helpers swallow their own errors so a missing
-  // API key or upstream hiccup never blocks the session start. We do NOT
-  // await — the HTTP response should return immediately.
-  void warmExecutorPrefix({ config, interview });
-  void warmPlannerPrefix({ config, interview });
-
   return {
     interviewer_message: openingText,
     session_state: interview.session_state,
@@ -242,11 +233,12 @@ async function runPlannerInline(
   const turns = interview.session_state?.turn_count || 0;
   let forcedDone = interviewDone;
   if (turns >= HARD_TURN_CAP) {
-    interview.session_state.interview_done = true;
+    interview.session_state.pending_close = true;
+    interview.session_state.interview_done = false;
     forcedDone = true;
   }
 
-  return { captured, interviewDone: forcedDone };
+  return { captured, interviewDone: forcedDone, pendingClose: Boolean(interview.session_state?.pending_close) };
 }
 
 /**

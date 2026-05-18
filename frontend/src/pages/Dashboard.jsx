@@ -84,11 +84,19 @@ export default function Dashboard() {
           </h1>
           <p className="text-muted-foreground mt-1">Track your interview practice and improvement.</p>
         </div>
-        <Link to="/setup">
-          <Button className="bg-accent hover:bg-accent/90 text-accent-foreground gap-2 rounded-xl h-12 px-6 font-semibold">
-            <Plus className="w-4 h-4" /> New Interview
-          </Button>
-        </Link>
+        {entitlements?.canStartInterview !== false ? (
+          <Link to="/setup">
+            <Button className="bg-accent hover:bg-accent/90 text-accent-foreground gap-2 rounded-xl h-12 px-6 font-semibold">
+              <Plus className="w-4 h-4" /> New Interview
+            </Button>
+          </Link>
+        ) : (
+          <Link to="/billing">
+            <Button variant="outline" className="rounded-xl h-12 px-6 font-semibold">
+              Upgrade to start
+            </Button>
+          </Link>
+        )}
       </div>
 
       {entitlements ? (
@@ -97,8 +105,14 @@ export default function Dashboard() {
             <span className="font-medium text-foreground capitalize">{entitlements.effectivePlan}</span>
             {' · '}
             {entitlements.interviewsLimit == null
-              ? `${entitlements.interviewsUsed} interviews used this month (unlimited)`
-              : `${entitlements.interviewsUsed} of ${entitlements.interviewsLimit} interviews used this month`}
+              ? `${entitlements.interviewsUsed} interviews used this period (unlimited)`
+              : `${entitlements.interviewsUsed} of ${entitlements.interviewsLimit} interviews used this period`}
+            {entitlements.quotaResetsAt ? (
+              <span>
+                {' '}
+                · Resets {new Date(entitlements.quotaResetsAt).toLocaleDateString()}
+              </span>
+            ) : null}
           </p>
           {entitlements.effectivePlan === 'starter' || !entitlements.canStartInterview ? (
             <Link to="/billing">

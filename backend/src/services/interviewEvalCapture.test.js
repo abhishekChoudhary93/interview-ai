@@ -220,7 +220,7 @@ test('applyEvalToSessionState sets pending_close instead of interview_done when 
   assert.equal(interview.session_state.interview_done, false);
 });
 
-test('applyEvalToSessionState blocks CLOSE before minimum duration', () => {
+test('applyEvalToSessionState does NOT block CLOSE before minimum duration', () => {
   const config = loadInterviewConfig();
   const interview = makeInterview({
     session_started_at: new Date(),
@@ -231,6 +231,6 @@ test('applyEvalToSessionState blocks CLOSE before minimum duration', () => {
     normalizeResult({ m: 'CLOSE', f: 'Wrapping up.', done: true }),
     { config, candidateTurnIndex: 2, candidateMessage: 'Done.' }
   );
-  assert.equal(interview.session_state.pending_close, false);
-  assert.equal(interview.session_state.eval_history.at(-1).close_blocked_reason, 'before_min_duration');
+  assert.equal(interview.session_state.pending_close, true);
+  assert.equal(interview.session_state.eval_history.at(-1).close_blocked_reason, null);
 });

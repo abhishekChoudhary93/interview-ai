@@ -887,14 +887,7 @@ export function applyEvalToSessionState(interview, captured, { config, candidate
     captured.recommended_focus = '';
     captured.interview_done = true;
   }
-  const wantsClose = captured.move === 'CLOSE' || captured.interview_done === true;
-  if (wantsClose && elapsed < minCloseMin) {
-    closeBlockedReason = 'before_min_duration';
-    if (captured.move === 'CLOSE') {
-      captured.move = 'TRANSITION';
-    }
-    captured.interview_done = false;
-  }
+
 
   const phaseIndex = buildPhaseTopicIndex(config);
   const prevHierarchy = ss.runtime_state?.conversation_hierarchy || {};

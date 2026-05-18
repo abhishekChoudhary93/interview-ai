@@ -867,6 +867,18 @@ function ensureCandidateProgressShape(existing, config) {
   }
   return out;
 }
+function isConcludingText(text) {
+  if (!text) return false;
+  const lower = String(text).toLowerCase();
+  return (
+    lower.includes('interview is officially closed') ||
+    lower.includes('interview is now concluded') ||
+    lower.includes('interview is closed') ||
+    lower.includes('interview is concluded') ||
+    (lower.includes('thank you for your time') &&
+      (lower.includes('conclud') || lower.includes('clos') || lower.includes('stop here') || lower.includes('wrapping up')))
+  );
+}
 
 export function applyEvalToSessionState(interview, captured, { config, candidateTurnIndex, candidateMessage = '' }) {
   if (!interview.session_state) interview.session_state = {};
@@ -888,6 +900,25 @@ export function applyEvalToSessionState(interview, captured, { config, candidate
     captured.interview_done = true;
   }
 
+  const turns = Array.isArray(interview.conversation_turns) ? interview.conversation_turns : [];
+  let lastInterviewerContent = '';
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    if (turns[i]?.role === 'interviewer') {
+      lastInterviewerContent = String(turns[i].content || '');
+      break;
+    }
+  }
+
+  const wantsClose =
+    captured.move === 'CLOSE' ||
+    captured.interview_done === true ||
+    isConcludingText(captured.focus) ||
+    isConcludingText(lastInterviewerContent);
+
+  if (wantsClose) {
+    captured.move = 'CLOSE';
+    captured.interview_done = true;
+  }
 
   const phaseIndex = buildPhaseTopicIndex(config);
   const prevHierarchy = ss.runtime_state?.conversation_hierarchy || {};

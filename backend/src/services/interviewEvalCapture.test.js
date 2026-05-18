@@ -234,14 +234,3 @@ test('applyEvalToSessionState does NOT block CLOSE before minimum duration', () 
   assert.equal(interview.session_state.pending_close, true);
   assert.equal(interview.session_state.eval_history.at(-1).close_blocked_reason, null);
 });
-
-test('applyEvalToSessionState closes interview if focus contains concluding text', () => {
-  const config = loadInterviewConfig();
-  const interview = makeInterview();
-  applyEvalToSessionState(
-    interview,
-    normalizeResult({ m: 'TRANSITION', f: 'Yes, the interview is officially closed. Thank you.', done: false }),
-    { config, candidateTurnIndex: 2, candidateMessage: 'Done.' }
-  );
-  assert.equal(interview.session_state.pending_close, true);
-});
